@@ -1,0 +1,11 @@
+[package]
+name = "acp-sandbox-rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "acp-sandbox-rust"
+path = "src/main.rs"
+
+# No external dependencies — the stdlib JSON parser handles our simple schema,
+# so the binary compiles without any crates.io network access inside Docker.

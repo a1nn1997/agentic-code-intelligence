@@ -1,0 +1,13 @@
+{
+  "name": "acp-sandbox-ts",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc --outDir dist main.ts",
+    "start": "node dist/main.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
