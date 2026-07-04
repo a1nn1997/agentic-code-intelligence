@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ACP Observability Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --purple: #bc8cff;
+      --orange: #ffa657;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    /* ── header ── */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header h1 { font-size: 16px; font-weight: 600; color: var(--text); }
+    .header .subtitle { font-size: 12px; color: var(--muted); }
+    .header .spacer { flex: 1; }
+
+    /* auth form */
+    .auth-row { display: flex; gap: 8px; align-items: center; }
+    .auth-row input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+      width: 280px;
+    }
+    .auth-row input::placeholder { color: var(--muted); }
+    .btn {
+      background: var(--accent);
+      color: #0d1117;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-sm {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .btn-sm:hover { border-color: var(--accent); color: var(--accent); }
+
+    #live-badge {
+      display: none;
+      background: var(--green);
+      color: #0d1117;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    #live-badge.active { display: inline-block; }
+
+    /* ── layout ── */
+    .main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+    /* ── error / status banners ── */
+    .banner {
+      padding: 10px 14px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 13px;
+    }
+    .banner.error { background: rgba(248,81,73,0.15); border: 1px solid var(--red); color: var(--red); }
+    .banner.info  { background: rgba(88,166,255,0.1); border: 1px solid var(--accent); color: var(--accent); }
+    .hidden { display: none !important; }
+
+    /* ── KPI cards ── */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .kpi-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .kpi-card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .kpi-card .value { font-size: 28px; font-weight: 700; line-height: 1; }
+    .kpi-card .sub   { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .kpi-card.green .value { color: var(--green); }
+    .kpi-card.yellow .value { color: var(--yellow); }
+    .kpi-card.red   .value { color: var(--red); }
+    .kpi-card.purple .value { color: var(--purple); }
+    .kpi-card.orange .value { color: var(--orange); }
+    .kpi-card.blue   .value { color: var(--accent); }
+
+    /* ── section headers ── */
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .section-header h2 { font-size: 14px; font-weight: 600; color: var(--text); }
+
+    /* ── run table ── */
+    .filter-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    .filter-row input, .filter-row select {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 12px;
+    }
+    .filter-row select option { background: var(--surface); }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: rgba(255,255,255,0.03); }
+    tbody td { padding: 9px 12px; font-size: 12px; color: var(--text); vertical-align: middle; }
+
+    .state-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .state-VERIFIED_SUCCESS  { background: rgba(63,185,80,0.15);  color: var(--green); }
+    .state-BUDGET_EXHAUSTED  { background: rgba(210,153,34,0.15); color: var(--yellow); }
+    .state-GAVE_UP           { background: rgba(248,81,73,0.15);  color: var(--red); }
+    .state-RUNNING           { background: rgba(88,166,255,0.15); color: var(--accent); }
+    .state-PENDING           { background: rgba(139,148,158,0.15);color: var(--muted); }
+
+    /* ── trace panel ── */
+    #trace-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-top: 24px;
+      padding: 16px;
+    }
+    #trace-panel h3 { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+    .trace-steps { display: flex; flex-direction: column; gap: 6px; }
+    .trace-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 8px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .step-index { font-size: 10px; color: var(--muted); min-width: 28px; margin-top: 2px; }
+    .step-kind  { font-size: 12px; font-weight: 600; color: var(--accent); min-width: 150px; }
+    .step-meta  { font-size: 11px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
+    .step-result.ok  { color: var(--green); }
+    .step-result.err { color: var(--red); }
+
+    /* ── metrics panel ── */
+    #metrics-pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: pre;
+      overflow-x: auto;
+      margin-top: 24px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    /* ── footer ── */
+    .footer { text-align: center; color: var(--muted); font-size: 11px; padding: 24px; margin-top: 8px; }
+    .footer a { color: var(--accent); text-decoration: none; }
+
+    /* ── loading spinner ── */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── empty state ── */
+    .empty { text-align: center; padding: 32px; color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header h1">ACP Observability Dashboard</div>
+    <div class="header subtitle">Agentic Code-Intelligence Platform — unprivileged consumer</div>
+  </div>
+  <div class="spacer"></div>
+  <span id="live-badge">● LIVE</span>
+  <div class="auth-row">
+    <input id="api-key-input" type="password" placeholder="Bearer token (prefix.secret)" autocomplete="off">
+    <button class="btn" id="load-btn">Load</button>
+    <button class="btn-sm" id="live-btn" title="Toggle auto-refresh (polls /metrics + events)">Live</button>
+  </div>
+</div>
+
+<div class="main">
+  <div id="error-banner" class="banner error hidden"></div>
+  <div id="info-banner"  class="banner info  hidden"></div>
+
+  <!-- KPI cards -->
+  <div id="kpi-section" class="hidden">
+    <div class="kpi-grid" id="kpi-grid"></div>
+  </div>
+
+  <!-- Run table -->
+  <div id="runs-section" class="hidden">
+    <div class="section-header">
+      <h2>Runs</h2>
+      <div style="font-size:12px;color:var(--muted)" id="run-count"></div>
+    </div>
+    <div class="filter-row">
+      <input id="filter-id"    placeholder="Filter by task_id…" style="width:220px">
+      <select id="filter-state">
+        <option value="">All states</option>
+        <option>VERIFIED_SUCCESS</option>
+        <option>GAVE_UP</option>
+        <option>BUDGET_EXHAUSTED</option>
+        <option>RUNNING</option>
+        <option>PENDING</option>
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Task ID</th>
+            <th>State</th>
+            <th>Tokens in</th>
+            <th>Tokens out</th>
+            <th>Cost (USD)</th>
+            <th>Sandbox s</th>
+            <th>Created</th>
+            <th>Trace</th>
+          </tr>
+        </thead>
+        <tbody id="runs-tbody"></tbody>
+      </table>
+    </div>
+    <div id="runs-empty" class="empty hidden">No runs yet.</div>
+  </div>
+
+  <!-- Trace panel -->
+  <div id="trace-panel" class="hidden">
+    <h3 id="trace-title">Trace</h3>
+    <div class="trace-steps" id="trace-steps"></div>
+  </div>
+
+  <!-- Raw metrics -->
+  <div id="metrics-section" class="hidden">
+    <div class="section-header" style="margin-top:24px">
+      <h2>Raw metrics (/metrics)</h2>
+    </div>
+    <pre id="metrics-pre"></pre>
+  </div>
+
+</div>
+
+<div class="footer">
+  Data sources: <a href="/v1/dashboard/summary">/v1/dashboard/summary</a> ·
+  <a href="/v1/dashboard/runs">/v1/dashboard/runs</a> ·
+  /v1/dashboard/runs/{id}/trace ·
+  <a href="/metrics">/metrics</a> — all public/auth-scoped, none privileged.
+  No browser storage used (stateless by construction).
+</div>
+
+<script>
+/* ACP Observability Dashboard — Phase 9
+ * Vanilla JS, no framework, no build step.
+ * Data sources: /v1/dashboard/summary, /v1/dashboard/runs,
+ *               /v1/dashboard/runs/{id}/trace, /metrics
+ * NO localStorage / sessionStorage / IndexedDB — stateless by construction.
+ * Auth: every fetch sends Authorization: Bearer <token> header.
+ * Reopening reconstructs all state from the API.
+ */
+
+(function () {
+  'use strict';
+
+  /* ── state (in-memory only, never persisted) ─────────────────────────────── */
+  let _token = '';
+  let _runs   = [];
+  let _liveTimer = null;
+  const LIVE_INTERVAL_MS = 5000;
+
+  /* ── DOM refs ────────────────────────────────────────────────────────────── */
+  const $  = id => document.getElementById(id);
+  const keyInput    = $('api-key-input');
+  const loadBtn     = $('load-btn');
+  const liveBtn     = $('live-btn');
+  const liveBadge   = $('live-badge');
+  const errorBanner = $('error-banner');
+  const infoBanner  = $('info-banner');
+  const kpiSection  = $('kpi-section');
+  const kpiGrid     = $('kpi-grid');
+  const runsSection = $('runs-section');
+  const runsTbody   = $('runs-tbody');
+  const runsEmpty   = $('runs-empty');
+  const runCount    = $('run-count');
+  const filterIdEl  = $('filter-id');
+  const filterState = $('filter-state');
+  const tracePanel  = $('trace-panel');
+  const traceTitle  = $('trace-title');
+  const traceSteps  = $('trace-steps');
+  const metricsSec  = $('metrics-section');
+  const metricsPre  = $('metrics-pre');
+
+  /* ── auth fetch helper ───────────────────────────────────────────────────── */
+  async function apiFetch(path) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (_token) headers['Authorization'] = 'Bearer ' + _token;
+    const resp = await fetch(path, { headers });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw Object.assign(new Error(text), { status: resp.status });
+    }
+    return resp.json();
+  }
+
+  async function rawFetch(path) {
+    const headers = {};
+    if (_token) headers['Authorization'] = 'Bearer ' + _token;
+    const resp = await fetch(path, { headers });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return resp.text();
+  }
+
+  /* ── error / info display ────────────────────────────────────────────────── */
+  function showError(msg) {
+    errorBanner.textContent = '⚠ ' + msg;
+    errorBanner.classList.remove('hidden');
+    infoBanner.classList.add('hidden');
+  }
+  function showInfo(msg) {
+    infoBanner.textContent = msg;
+    infoBanner.classList.remove('hidden');
+    errorBanner.classList.add('hidden');
+  }
+  function clearBanners() {
+    errorBanner.classList.add('hidden');
+    infoBanner.classList.add('hidden');
+  }
+
+  /* ── KPI rendering ───────────────────────────────────────────────────────── */
+  function renderKPIs(summary) {
+    const cards = [
+      { label: 'Total runs',          value: summary.tasks_total,                        cls: 'blue' },
+      { label: 'Verified ✓',          value: summary.tasks_by_state['VERIFIED_SUCCESS'] || 0, cls: 'green' },
+      { label: 'Budget exhausted',    value: summary.tasks_by_state['BUDGET_EXHAUSTED'] || 0, cls: 'yellow' },
+      { label: 'Gave up',             value: summary.tasks_by_state['GAVE_UP'] || 0,      cls: 'red' },
+      { label: 'Injections defended', value: summary.injections_defended,                 cls: 'purple' },
+      { label: 'Secrets redacted',    value: summary.secrets_redacted,                    cls: 'purple' },
+      { label: 'Sandbox pass',        value: summary.sandbox_pass,                        cls: 'green',
+        sub: 'fail: ' + summary.sandbox_fail },
+      { label: 'Total tokens in',     value: fmt(summary.total_tokens_in),                cls: '' },
+      { label: 'Total tokens out',    value: fmt(summary.total_tokens_out),               cls: '' },
+      { label: 'Total cost (USD)',     value: '$' + summary.total_cost_usd.toFixed(4),    cls: 'orange' },
+      { label: 'Sandbox time (s)',     value: summary.total_sandbox_seconds.toFixed(1),   cls: '' },
+    ];
+
+    kpiGrid.innerHTML = cards.map(c => `
+      <div class="kpi-card ${c.cls}">
+        <div class="label">${c.label}</div>
+        <div class="value">${c.value}</div>
+        ${c.sub ? `<div class="sub">${c.sub}</div>` : ''}
+      </div>`).join('');
+    kpiSection.classList.remove('hidden');
+  }
+
+  /* ── run table rendering ─────────────────────────────────────────────────── */
+  function stateClass(s) { return 'state-badge state-' + (s || 'PENDING'); }
+
+  function renderRuns(runs) {
+    _runs = runs;
+    applyFilters();
+    runsSection.classList.remove('hidden');
+  }
+
+  function applyFilters() {
+    const idFilter    = filterIdEl.value.trim().toLowerCase();
+    const stateFilter = filterState.value;
+    const filtered = _runs.filter(r => {
+      if (idFilter && !r.task_id.toLowerCase().includes(idFilter)) return false;
+      if (stateFilter && r.state !== stateFilter) return false;
+      return true;
+    });
+    runCount.textContent = filtered.length + ' of ' + _runs.length + ' runs';
+    if (!filtered.length) {
+      runsTbody.innerHTML = '';
+      runsEmpty.classList.remove('hidden');
+      return;
+    }
+    runsEmpty.classList.add('hidden');
+    runsTbody.innerHTML = filtered.map(r => `
+      <tr>
+        <td style="font-family:monospace;font-size:11px">${r.task_id}</td>
+        <td><span class="${stateClass(r.state)}">${r.state || 'PENDING'}</span></td>
+        <td>${fmt(r.tokens_in)}</td>
+        <td>${fmt(r.tokens_out)}</td>
+        <td>$${r.cost_usd.toFixed(5)}</td>
+        <td>${r.sandbox_seconds.toFixed(1)}</td>
+        <td style="color:var(--muted)">${fmtDate(r.created_at)}</td>
+        <td><button class="btn-sm trace-btn" data-id="${r.task_id}">trace</button></td>
+      </tr>`).join('');
+
+    runsTbody.querySelectorAll('.trace-btn').forEach(btn => {
+      btn.addEventListener('click', () => loadTrace(btn.dataset.id));
+    });
+  }
+
+  /* ── trace rendering ─────────────────────────────────────────────────────── */
+  async function loadTrace(taskId) {
+    tracePanel.classList.remove('hidden');
+    traceTitle.textContent = 'Trace: ' + taskId;
+    traceSteps.innerHTML = '<div class="spinner"></div>';
+    try {
+      const data = await apiFetch('/v1/dashboard/runs/' + taskId + '/trace');
+      if (!data.steps.length) {
+        traceSteps.innerHTML = '<div class="empty">No journal steps yet.</div>';
+        return;
+      }
+      traceSteps.innerHTML = data.steps.map(s => {
+        const resultCls = s.result === 'pass' || s.result === 'ok' ? 'ok' :
+                          s.result === 'fail' || s.result === 'error' ? 'err' : '';
+        return `
+          <div class="trace-step">
+            <span class="step-index">#${s.step_index}</span>
+            <span class="step-kind">${s.kind}</span>
+            <div class="step-meta">
+              ${s.tokens_in  ? `<span>in:${fmt(s.tokens_in)}</span>` : ''}
+              ${s.tokens_out ? `<span>out:${fmt(s.tokens_out)}</span>` : ''}
+              ${s.retrieval_bytes ? `<span>bytes:${fmt(s.retrieval_bytes)}</span>` : ''}
+              ${s.sandbox_seconds ? `<span>sbx:${s.sandbox_seconds.toFixed(2)}s</span>` : ''}
+              ${s.result !== undefined && s.result !== null
+                ? `<span class="step-result ${resultCls}">${s.result}</span>` : ''}
+              <span>${fmtDate(s.created_at)}</span>
+            </div>
+          </div>`;
+      }).join('');
+      tracePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) {
+      showError('Failed to load trace: ' + e.message);
+      traceSteps.innerHTML = '';
+    }
+  }
+
+  /* ── metrics ─────────────────────────────────────────────────────────────── */
+  async function loadMetrics() {
+    try {
+      const text = await rawFetch('/metrics');
+      metricsPre.textContent = text;
+      metricsSec.classList.remove('hidden');
+    } catch (_) { /* metrics are optional */ }
+  }
+
+  /* ── main load ───────────────────────────────────────────────────────────── */
+  async function loadAll() {
+    if (!_token) { showError('Enter a Bearer token to load data.'); return; }
+    clearBanners();
+    showInfo('Loading…');
+    try {
+      const [summary, runsData] = await Promise.all([
+        apiFetch('/v1/dashboard/summary'),
+        apiFetch('/v1/dashboard/runs?limit=100'),
+      ]);
+      renderKPIs(summary);
+      renderRuns(runsData.runs);
+      await loadMetrics();
+      clearBanners();
+    } catch (e) {
+      const status = e.status;
+      if (status === 401) {
+        showError('401 Unauthorized — check your Bearer token.');
+      } else {
+        showError('Load failed (' + (status || e.message) + ')');
+      }
+      kpiSection.classList.add('hidden');
+      runsSection.classList.add('hidden');
+    }
+  }
+
+  /* ── live mode ───────────────────────────────────────────────────────────── */
+  function startLive() {
+    if (_liveTimer) return;
+    liveBadge.classList.add('active');
+    _liveTimer = setInterval(loadAll, LIVE_INTERVAL_MS);
+  }
+  function stopLive() {
+    clearInterval(_liveTimer);
+    _liveTimer = null;
+    liveBadge.classList.remove('active');
+  }
+  function toggleLive() {
+    if (_liveTimer) stopLive(); else { loadAll(); startLive(); }
+  }
+
+  /* ── format helpers ──────────────────────────────────────────────────────── */
+  function fmt(n) {
+    if (n === undefined || n === null) return '0';
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+    if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'k';
+    return String(n);
+  }
+  function fmtDate(s) {
+    if (!s) return '';
+    try { return new Date(s).toLocaleString(); } catch (_) { return s; }
+  }
+
+  /* ── event wiring ────────────────────────────────────────────────────────── */
+  loadBtn.addEventListener('click', () => {
+    _token = keyInput.value.trim();
+    loadAll();
+  });
+  keyInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { _token = keyInput.value.trim(); loadAll(); }
+  });
+  liveBtn.addEventListener('click', () => {
+    _token = keyInput.value.trim();
+    toggleLive();
+  });
+  filterIdEl.addEventListener('input',    applyFilters);
+  filterState.addEventListener('change',  applyFilters);
+
+  /* ── LIVE=1 query param support (for make logs LIVE=1) ───────────────────── */
+  if (new URLSearchParams(window.location.search).get('live') === '1') {
+    startLive();
+  }
+
+})();
+</script>
+</body>
+</html>
