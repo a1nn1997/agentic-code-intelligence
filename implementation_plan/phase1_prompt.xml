@@ -1,0 +1,19 @@
+<phase_task>
+  <phase>1</phase>
+  <goal>Workspace ingestion + structural code index (Python + TypeScript), with incremental re-index. Build the structural backbone that makes budgeted retrieval possible on a repo that does not fit in context. NO retrieval API yet (that is Phase 2), NO agent/model calls.</goal>
+  <deliverables>
+    <d>Workspace ingestion: implement WorkspaceService (replace the Phase-0 stub) — ingest a repo from a local archive/dir into a per-user workspace on disk, user-scoped by construction (path resolves from user_id+workspace_id; no primitive can address another user's workspace). Record workspace + head in the schema.</d>
+    <d>Structural index via py-tree-sitter for Python AND TypeScript in ONE repo: (1) symbol table — functions, classes, methods, types with file+span locations; (2) references / call sites; (3) import/file graph. All queryable across files. A symbol defined in one file must resolve to all its references across the repo and across both languages where applicable.</d>
+    <d>Incremental re-index: editing a file re-indexes only the affected file(s) and updates the symbol/reference/import graph consistently — not a full rebuild. State the invariant: after an incremental update the index equals what a full rebuild would produce (assert this in a test).</d>
+    <d>Index is an internal contract behind the module boundary — the model/consumer never touches it. Deterministic: the same workspace snapshot yields the same index (stable ordering), which Phase 2 will rely on for replay.</d>
+    <d>Design + build the synthetic sample repo under a fixture path: a small Python+TypeScript web service with a /users endpoint, its callers, and its tests, structured so (a) a symbol is used across many files (for the Phase-5 rename), (b) one adversarial instruction is planted in a docstring/comment (defended in Phase 2/4, present now), and (c) a fake .env-style secret is present to test Phase-2 redaction. Document what each planted item is for.</d>
+    <d>Wire index build/query into agentctl (e.g. agentctl index build/stats) for inspection — internal/operator only, not a consumer API.</d>
+  </deliverables>
+  <oracle>
+    On the sample repo: (1) a symbol defined in one file resolves to ALL its call sites across files and across both languages; (2) editing a file triggers incremental re-index and the resulting index is byte-for-byte equivalent to a full rebuild (equivalence test passes); (3) the import/file graph correctly links importer→imported across Python and TS; (4) index build is deterministic — same snapshot, same serialized index; (5) cross-user isolation: WorkspaceService cannot open or index another user's workspace (test asserts this). All via `make test` (new unit + integration tests) with no model/network calls.
+  </oracle>
+  <docs>
+    DESIGN.md retrieval section: why a STRUCTURAL index beats naive embeddings-over-chunks for a repo that exceeds the context window (this is the section that directly answers "why it beats naive RAG"). Start ADR-001 (retrieval model): tree-sitter + symbol/reference/import graph, alternatives (LSIF, ctags, LSP, embeddings-only) and why rejected, consequences. Note the incremental-equivalence invariant. Document the sample-repo planted items and their purpose.
+  </docs>
+  <stop>Do not start Phase 2 (the budgeted retrieval API). Report: the index data model (how symbols/references/imports are represented and stored), the WorkspaceService interface as implemented, the incremental re-index strategy + equivalence invariant, and the sample-repo layout with the location/purpose of each planted item (rename symbol, injection, secret).</stop>
+</phase_task>

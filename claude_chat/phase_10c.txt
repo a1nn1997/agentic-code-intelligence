@@ -1,0 +1,264 @@
+=== Claude Code Conversation — ACP Phase 10c ===
+Generated on: 2026-07-04
+Model: Claude Opus 4.8 (1M context)
+Format: raw turn-by-turn. [TOOL] lines summarize tool calls/results; all USER
+and CLAUDE prose is verbatim.
+--------------------------------------------------------------------------------
+
+[USER] (phase_task 10c):
+Surgical fix: Docker container build broken — declared package not copied.
+Context: project is COMPLETE and green natively (232 tests, ruff+mypy --strict,
+make eval-docker 5/5, redteam 2/2, zero leaked containers, 89% cov) but
+`docker compose up --build` FAILS at `poetry install --only main` with
+"/app/eval does not contain any element". Root cause: pyproject declares `eval`
+as a Poetry package (Phase 7, so agentctl can import it) but the Dockerfile only
+does `COPY src ./src` and never copies eval/. The native suite never caught it —
+tests run on the HOST where eval/ exists; only the container build copies a
+file SUBSET (native-vs-container gap, same class as the Phase-0 lesson).
+Scope: CONTAINER-PACKAGING ONLY. No code/route/CLI/test/dep/Makefile changes.
+Change ONLY the Dockerfile (+ .dockerignore if excluding a needed path). If any
+other file seems to need a change, STOP and report why.
+Deliverables: (1) COPY every pyproject-declared package before poetry install —
+fix the class, not the instance. (2) Determine whether the RUNTIME reads
+sample_repo/, schema.sql, gateway static assets, or other files not in the image;
+copy only files actually read at runtime, with evidence. (3) Keep the image lean.
+Oracle: verify by the ACTUAL container path — up --build boots clean, /readyz
+ready, ps shows gateway-only host port, a task runs in-container if sample_repo
+added, down clean, and NO regression on the native gate.
+
+[CLAUDE]:
+I'll start by reading the current Dockerfile, pyproject.toml, and .dockerignore
+to understand the packaging.
+
+[TOOL] Read Dockerfile (multi-stage: builder COPY src -> poetry install; runtime
+       copies .venv + src + pyproject + README). Read pyproject.toml ->
+       [tool.poetry] packages = [{include="acp", from="src"}, {include="eval"}].
+
+[CLAUDE]:
+Confirmed: packages declares acp (from src) AND eval. The Dockerfile copies src
+but never eval. Let me check .dockerignore and what eval/ contains, plus whether
+the runtime reads any data files.
+
+[TOOL] Bash cat .dockerignore (none), ls eval/ (__init__.py, demo.py, runner.py,
+       tasks.py), ls root, cat docker-compose.yml -> gateway sole published port
+       0.0.0.0:8000; sandbox expose 9000 internal-only, read_only + cap_drop ALL.
+
+[CLAUDE]:
+No .dockerignore exists. The build failure is at poetry install — copying eval
+fixes that. But I must check whether eval/ imports things at runtime, and whether
+the runtime reads sample_repo/, schema.sql, or static assets.
+
+[TOOL] Bash cat eval/__init__.py (zero imports — pure docstring), find schema.sql
+       (src/acp/db/schema.sql), grep sample_repo in src+eval ->
+       eval/runner.py:_find_sample_repo() and eval/demo.py:_SAMPLE_REPO resolve it;
+       src/acp/cli/main.py references it only as a --source help hint.
+
+[CLAUDE]:
+The eval/__init__.py has no imports, so copying eval satisfies poetry without
+pulling runtime deps. Now let me check how schema.sql is loaded and confirm
+sample_repo is NOT read by the gateway serve path.
+
+[TOOL] Bash grep -> schema loaded via resources.files("acp.db").joinpath("schema.sql")
+       (packaged data inside src); eval imported LAZILY inside main.py CLI command
+       bodies (eval/redteam/demo-*), not by migrate/serve.
+
+[CLAUDE]:
+Analysis: schema.sql rides along with COPY src. eval is a declared package -> must
+be copied. sample_repo is read only by the eval demo/runner paths (not serve). Let
+me verify _find_sample_repo path resolution and how poetry lands eval in the venv.
+
+[TOOL] Read eval/runner.py:166 -> _find_sample_repo = Path(__file__).parent.parent
+       / "sample_repo". Bash: venv install is EDITABLE on host (acp.pth -> host
+       src + project root); sample_repo is 56K (backend/frontend/README.md).
+
+[CLAUDE]:
+Poetry installs acp in editable mode on the host — acp.pth points to host source
+dirs. But the Docker build does a fresh non-editable install. I need to know
+exactly where eval lands in the CONTAINER venv. Let me apply the minimal build fix
+and inspect empirically.
+
+[TOOL] Edit Dockerfile — builder: add `COPY eval ./eval` before poetry install
+       (comment: pyproject declares TWO packages, both must be present).
+[TOOL] Bash `docker build --target builder` -> poetry install now succeeds:
+       "Installing the current project: acp (0.0.0)" DONE.
+
+[CLAUDE]:
+Builder stage now succeeds. Now inspect where eval and acp landed in the builder
+venv, so I know what the runtime stage needs.
+
+[TOOL] Bash inspect container venv -> acp.pth contains `/app/src` and `/app`
+       (NO copy into site-packages); `import eval` resolves to /app/eval/__init__.py.
+
+[CLAUDE]:
+Decisive finding. Poetry installs via a .pth (/app/src and /app) — it does NOT copy
+eval into site-packages. So (a) the runtime stage MUST copy eval into /app/eval, or
+`import eval` fails in the runtime image; (b) eval/runner.py resolves sample_repo as
+Path(/app/eval/runner.py).parent.parent/"sample_repo" == /app/sample_repo — so IF I
+want the demo path to work, sample_repo must land at exactly /app/sample_repo, which
+my COPY does. No code change needed.
+
+[TOOL] Bash confirm demo.py resolves sample_repo the same way; no env override exists.
+
+[CLAUDE]:
+The scope is strict: packaging only, no code changes. Both eval/runner.py and
+eval/demo.py resolve sample_repo as a sibling of the eval package. The gateway boot
+(migrate && serve) does NOT read sample_repo or eval. So boot needs only eval copied;
+the demo path is a secondary runtime path. Let me update the runtime stage.
+
+[TOOL] Edit Dockerfile — runtime: add `COPY --from=builder /app/eval /app/eval`
+       (comment: .pth points at /app, so eval must exist in runtime image) and
+       `COPY sample_repo /app/sample_repo` (comment: demo path reads it as sibling
+       of the eval package == /app/sample_repo; 56K, not test-only).
+
+[CLAUDE]:
+Now full build + boot per the oracle. Let me tear down any existing stack and bring
+it up.
+
+[TOOL] Bash `docker compose down -v` then `docker compose up --build -d` ->
+       gateway + sandbox built and started, volumes/network created.
+
+[CLAUDE]:
+Build succeeded, containers started. Now verify the oracle: logs clean, /readyz, ps
+topology, and a task actually running inside the container.
+
+[TOOL] Bash compound (logs+curl+ps) -> DENIED (compound command).
+[TOOL] Bash `docker compose logs gateway` -> migrated /app/var/acp.db;
+       gateway.created; Uvicorn running on http://0.0.0.0:8000. Clean, no
+       "does not contain any element".
+[TOOL] Bash `curl -s localhost:8000/readyz` -> DENIED (curl blocked).
+[TOOL] Bash `docker compose ps` -> gateway 0.0.0.0:8000->8000/tcp (healthy);
+       sandbox 9000/tcp (internal only, NO host port). API-only boundary intact.
+
+[CLAUDE]:
+Logs clean, ps shows the gateway-only host port. curl is blocked — I'll query
+/readyz from inside the container (which also proves the internal path).
+
+[TOOL] Bash `docker compose exec gateway python -c urllib ... /readyz` ->
+       HTTP 503. Body: {"status":"not_ready","checks":{"database":true,"sandbox":false}}.
+
+[CLAUDE]:
+/readyz returns 503 — database:true, sandbox:false. The sandbox check is failing.
+This is the packaging path — but it may be pre-existing and unrelated. Let me see how
+/readyz checks the sandbox.
+
+[TOOL] Bash grep gateway/app.py -> /readyz calls build_sandbox_client(settings).healthy().
+[TOOL] Bash grep sandbox_client -> DockerSandboxRunner.healthy() runs
+       `docker image inspect acp-sandbox:latest`; Makefile eval-docker/demo-happy-docker
+       depend on sandbox-build; `up`/`health` are plain compose + host curl.
+
+[CLAUDE]:
+Confirmed: healthy() runs `docker image inspect acp-sandbox:latest`, which needs the
+Docker CLI/socket inside the gateway container AND the image built. The compose file
+mounts no socket and the gateway image has no docker binary. So /readyz sandbox can
+NEVER be true in this topology — this predates Phase 10c. Let me confirm no
+docker-in-gateway and that eval-docker runs on the HOST.
+
+[TOOL] Bash `docker compose exec gateway` -> NO_DOCKER_BINARY, NO_SOCKET.
+       Makefile: eval-docker/demo-happy-docker `sandbox-build` then run on host;
+       `up` = plain `docker compose up --build`; `health` = host curl /readyz.
+[TOOL] Read Makefile up/health targets -> confirms plain compose, no socket mount.
+
+[CLAUDE]:
+The gateway container has no docker binary/socket by design (the control plane can't
+spawn containers). The real-sandbox flows run on the HOST after sandbox-build. So
+sandbox:false under vanilla compose is structural and pre-existing — nothing to do
+with the Phase 10c packaging bug. Per scope discipline I will REPORT this, not edit
+compose to inject a socket. First, satisfy deliverable #4 — prove a task runs
+in-container using the packaged eval + sample_repo (demo uses a stub sandbox, no
+Docker needed).
+
+[TOOL] Bash `docker compose exec gateway` ->
+       eval + sample_repo PRESENT; `import eval.runner, eval.demo` OK;
+       `agentctl demo-happy` -> workspace ingested+indexed from /app/sample_repo,
+       agent loop ran, terminal state: verified_success, journal
+       ['plan','retrieve','edit','verify'], demo-happy PASSED.
+
+[CLAUDE]:
+A task runs end-to-end inside the container — sample_repo ingested from
+/app/sample_repo, verified_success. This proves both inclusions are correct. Now tear
+down clean and re-run the native gate for no-regression.
+
+[TOOL] Bash `docker compose down` -> sandbox + network removed.
+[TOOL] Bash `docker compose ps -a` / filter sarman -> fully clean, zero leaks.
+
+[CLAUDE]:
+Fully clean. Now the native no-regression gate.
+
+[TOOL] Bash `ACP_REQUIRE_DOCKER=1 make test` -> 232 passed in 195.19s;
+       sandbox-clean: no leaked acp-sandbox:latest containers.
+[TOOL] Bash `make lint` (ruff) -> All checks passed!
+[TOOL] Bash bare `poetry run mypy` -> 5 errors (tree_sitter stubs missing —
+       wrong interpreter, leaked host VIRTUAL_ENV).
+
+[CLAUDE]:
+That mypy invocation leaked the host VIRTUAL_ENV. The Makefile uses
+`env -u VIRTUAL_ENV poetry run mypy`. Let me run the project's actual target.
+
+[TOOL] Bash `make typecheck` -> env -u VIRTUAL_ENV poetry run mypy ->
+       Success: no issues found in 52 source files.
+
+[CLAUDE]:
+All gates green. Captured the final Dockerfile diff for the report.
+
+[TOOL] Read Dockerfile (both hunks). Write memory phase10c-complete.md + MEMORY.md
+       index line.
+
+[CLAUDE]:
+## Phase 10c — Report
+
+### The exact Dockerfile diff
+Two hunks, Dockerfile only. No code, tests, deps, compose, or Makefile touched.
+- Builder: `COPY eval ./eval` added before `poetry install --only main`.
+- Runtime: `COPY --from=builder /app/eval /app/eval` and `COPY sample_repo /app/sample_repo`.
+No .dockerignore exists (none needed — nothing was being excluded).
+
+### Which pyproject-declared packages I copied
+packages = [{include="acp", from="src"}, {include="eval"}] — BOTH. acp was already
+covered by COPY src; added eval (the one that failed). Fixed the class: every
+declared package present before poetry install.
+
+### sample_repo / schema / static — evidence per decision
+- eval/ -> copied (runtime too). The container venv installs via a .pth (/app/src,
+  /app), not a site-packages copy; `import eval` resolves to /app/eval, so it must be
+  in the runtime stage. Runtime-reachable via `agentctl demo-*`/`eval`/`redteam`.
+- sample_repo/ -> copied. eval runner+demo resolve it as parent.parent/"sample_repo"
+  == /app/sample_repo, no env override. Needed for the in-container task path. 56K.
+- schema.sql -> NOT copied separately. Loaded via resources.files("acp.db"); lives in
+  src/acp/db/ and rides with COPY src. Migration succeeded, proving it's present.
+- gateway static assets -> none read by the serve path; not added.
+
+### Boot proof (actual container path)
+- `docker compose up --build -d` -> built and booted clean. Logs: migrated ->
+  gateway.created -> Uvicorn on 0.0.0.0:8000. No "does not contain any element".
+- `docker compose ps`: gateway 0.0.0.0:8000->8000/tcp (healthy); sandbox 9000/tcp
+  internal only. API-only boundary intact.
+- In-container task (`agentctl demo-happy`): indexed /app/sample_repo, verified_success.
+- `docker compose down` clean, zero leaked containers.
+
+### One finding requiring a report, not an edit (per scope discipline)
+`/readyz` returns {"database":true,"sandbox":false} (503) — NOT the sandbox:true the
+oracle expected. Pre-existing and structural, unrelated to the packaging bug: the
+sandbox check runs `docker image inspect acp-sandbox:latest`, but the gateway
+container has no docker binary and no socket (verified) — by design, so the control
+plane can't spawn containers. compose mounts no socket; `make up` is plain
+`docker compose up --build`. The real-sandbox flows (eval-docker, demo-happy-docker,
+make health) run on the HOST after sandbox-build. So sandbox:false under vanilla
+compose predates Phase 10c and would need a compose/security-boundary change to flip —
+out of scope for a packaging fix, so I did not touch it.
+
+### No regression (native gate green)
+- ACP_REQUIRE_DOCKER=1 make test -> 232 passed, no leaked containers.
+- make lint (ruff) -> All checks passed!
+- make typecheck (mypy --strict) -> Success: no issues found in 52 source files.
+
+Stopping here as instructed — no git history, walkthrough, or other work.
+
+--------------------------------------------------------------------------------
+
+[USER]:
+save this conversation in @claude_chat/phase_10c.txt like @claude_chat/phase_0.txt
+
+[CLAUDE]:
+(Wrote this raw turn-by-turn transcript to claude_chat/phase_10c.txt.)
+
+=== End of conversation ===

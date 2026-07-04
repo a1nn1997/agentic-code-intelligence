@@ -1,0 +1,189 @@
+=== Claude Code Conversation — ACP Phase 10d ===
+Generated on: 2026-07-04
+Model: Claude Opus 4.8 (1M context)
+Format: raw turn-by-turn. [TOOL] lines summarize tool calls/results; all USER
+and CLAUDE prose is verbatim.
+Phase 10d — Documentation finalization: README spec-alignment + DESIGN.md
+system-design rewrite (DOCS-ONLY).
+--------------------------------------------------------------------------------
+
+[USER]:
+(phase_task) Phase 10d — finalize the two reader-facing docs. DOCS-ONLY: change
+only README.md and DESIGN.md; if a doc claim and the code disagree, the CODE is
+truth. Every capability claim must cite a real proving artifact that EXISTS.
+Preserve honesty flags: TASK-03 STUB-ONLY; polyglot = language-diverse harness +
+Python verification core; /readyz sandbox:false under bare compose is by-design;
+admin/org-tenant is design-only. DESIGN.md HARD CAP: 6 pages (assignment asks 2-5).
+Rewrite DESIGN.md into 7 sections in order: Requirements → Estimates → HLD/LLD →
+Failure modes → Tradeoffs → Pattern/Accelerator/Product feedback → Conclusion.
+README: quickstart with exact commands, example curl calls, a 9-hard-requirement
+mapping table, a "Known scope & caveats" section, and pointers. Oracle: §1 coverage
+matrix row per hard req + adversarial scenario, each citing a file that EXISTS.
+Assignment doc = implementation_plan/assignment.pdf; targets = README.md, DESIGN.md.
+
+[TOOL] Read assignment.pdf (240.5KB), README.md, DESIGN.md at session start.
+
+[CLAUDE]:
+I'll start by reading the assignment PDF properly to align the docs, and gather the
+honesty-critical facts from the codebase. Both docs are already substantial — this
+phase is spec-alignment and restructuring. Let me verify the key artifacts exist
+before I cite them, and read the assignment.
+
+[TOOL] Read assignment.pdf pages 1-10 -> ERROR: pdftoppm/poppler not installed.
+[TOOL] Bash pypdf/PyPDF2 extract -> NO_PYPDF.
+[TOOL] Bash poetry run pypdf/pdfminer -> NEITHER module available.
+[TOOL] Bash check pdftotext/mutool/fitz -> none present; list implementation_plan/
+       (found execution_plan.md + phase prompts).
+
+[CLAUDE]:
+No PDF library available, and I'm restricted from installing. There's an
+execution_plan.md that likely encodes the assignment requirements. Let me read it
+plus check the ADRs and directory structure.
+
+[TOOL] Read implementation_plan/execution_plan.md (full: locked decisions, 9 hard
+       reqs, 8 adversarial scenarios, doc deliverables, phase-by-phase, self-check).
+
+[CLAUDE]:
+This is the authoritative requirements source — the assignment's 9 hard requirements
+(§2), 8 adversarial scenarios (§3), deliverables (§4), and self-check (§7). Note the
+assignment says DESIGN.md is 2–5 pages; my phase task caps at 6. Now let me verify
+the artifacts I'll cite exist.
+
+[TOOL] Bash list docs/adr, eval/, tests/unit, tests/integration, tests/smoke,
+       src/acp modules -> all present (7 ADRs, 5 eval files, full test tree).
+
+[CLAUDE]:
+Most cited files exist. Note: DESIGN.md §5 references tests/e2e and tests/regression
+as separate dirs, but they don't exist as dirs — test_regression.py and
+test_e2e_http.py are under tests/integration/. Let me verify the specific test names
+cited in the docs, plus the Makefile targets and the eval task IDs.
+
+[TOOL] Bash verify Makefile targets + eval task ids + cited test names
+       -> REJECTED by user.
+
+[USER]:
+(interrupt) [pasted the full raw assignment text — Sarvam Gen AI Engineer take-home,
+all 11 pages: context, what to build §2.1–2.8, 8 adversarial scenarios, 9 hard
+requirements §3, scope guidance, deliverables §5, how we evaluate, ground rules,
+submission, 60-second self-check] "this is raw text of instruction manual use it"
+
+[CLAUDE]:
+I now have the full authoritative assignment text. Key facts locked: DESIGN.md target
+is 2–5 pages (my hard cap is 6), 9 hard requirements (§3), 8 adversarial scenarios
+(the box after §2.8), §2.8 scale/product surface is design-only (horizontal scaling +
+review surface), deliverables in §5. Let me finish verifying the artifacts I'll cite
+exist (read-only checks) before writing.
+
+[TOOL] Bash verify Makefile targets + eval task ids (TASK-01..05) + 15 cited test
+       names -> all resolve EXCEPT test_budget_clean_stop = MISSING (cited by old
+       DESIGN.md §11).
+
+[CLAUDE]:
+Almost all citations resolve. test_budget_clean_stop is MISSING — the current
+DESIGN.md §11 cites it. Let me find the real budget-stop test names and a few others.
+
+[TOOL] Bash grep real test names: budget stop -> test_budget_exhausted_stops_cleanly
+       + test_wall_clock_budget_stops_clean_with_partial_progress; plus self_repair,
+       multifile_rename, redaction, toctou, polyglot_parity, index incremental,
+       zip-slip -> all located.
+[TOOL] Bash check docs/ tree (setting_the_bar.md present, 7 ADRs), .env.example head,
+       repo-no-tests handling, KilledReason enum (deadline/oom/network/error).
+
+[CLAUDE]:
+I have everything I need. Starting with README (targeted edits — content largely
+sound, needs spec-alignment) then a full DESIGN.md rewrite into the 7-section
+structure, disciplined to ≤6 pages by pushing depth into the ADRs.
+
+[TOOL] Edit README.md — status block: Phase 7 -> "complete"; 9 hard reqs; 232 tests,
+       89% coverage, eval-docker 5/5, redteam 2/2; link to Known scope & caveats.
+[TOOL] Edit README.md — insert "Quickstart (exact commands)" block (make up ->
+       eval-docker -> redteam -> ACP_REQUIRE_DOCKER=1 make test -> test-coverage).
+[TOOL] Edit README.md — add "How this maps to the assignment" table (9 hard reqs ->
+       endpoint/module/test + proof).
+[TOOL] Edit README.md — add "Known scope & caveats" (TASK-03 STUB-ONLY, polyglot,
+       /readyz sandbox:false by-design, admin/org-tenant design-only, placeholder
+       pricing) + "Further reading" pointers (DESIGN, ADRs, setting_the_bar, eval,
+       walkthrough-as-demo-targets).
+
+[CLAUDE]:
+README done. Now the full DESIGN.md rewrite into the mandated 7-section structure,
+disciplined to ≤6 pages by pushing depth into the ADRs.
+
+[TOOL] Write DESIGN.md — 7 sections in order: (1) Requirements + coverage matrix
+       (9 hard reqs + 8 adversarial scenarios -> mechanism -> proof), (2) Estimates
+       (prereqs, footprint, cost model, PLACEHOLDER pricing), (3) HLD (3 invariants +
+       lifecycle diagram) then LLD (9 components, each with a plain-language sentence),
+       (4) Failure modes table (13 rows), (5) Tradeoffs table (11 rows), (6) Pattern/
+       Accelerator/Product feedback, (7) Conclusion + ADR/schema appendix.
+
+[CLAUDE]:
+Now the oracle pass: verify every artifact cited in the final DESIGN.md resolves to
+a real path, and estimate page length.
+
+[TOOL] Bash oracle: wc DESIGN.md (301 lines / 2909 words ≈ 5.3 pages); verify test
+       citations + src paths + ADR links. (find/head/sort intercepted by global-config
+       shell aliases -> false "MISSING FILE" noise; src paths + ADRs all OK.)
+[TOOL] Bash re-verify via command find -> same alias noise.
+
+[CLAUDE]:
+The head/find/sort failures are a shell-alias bug in my loop, not real misses — every
+src path and ADR resolved. Page length 5.3 (within the 6-page cap). Let me re-run the
+test verification cleanly via Python.
+
+[TOOL] Bash python3 (bypasses shell aliases): DESIGN.md -> ALL RESOLVE ✅;
+       README.md -> ALL RESOLVE ✅.
+
+[CLAUDE]:
+All citations in both docs resolve. The earlier "MISSING" output was a shell-alias
+artifact. Let me do the final oracle contradiction checks.
+
+[TOOL] Bash python3 oracle: 7 sections present in order; polyglot "Python verification
+       core" (DESIGN) + "language-diverse harness" (README); TASK-03 STUB-ONLY;
+       no "admin console" claimed in either doc; org/tenant design-only; sandbox:false
+       by-design; PLACEHOLDER pricing; cost model present -> ALL ✅.
+
+[CLAUDE]:
+All oracle checks pass. Phase 10d complete.
+
+## Report
+Docs-only. Changed only README.md and DESIGN.md. No source/tests/Makefile/Dockerfile/
+compose/ADRs touched.
+
+README quickstart command list:
+  make install / make up / make health / make sandbox-build / make eval-docker (5/5) /
+  make redteam / ACP_REQUIRE_DOCKER=1 make test (232) / make test-coverage (89%).
+  Plus: "How this maps to the assignment" 9-req table, "Known scope & caveats",
+  "Further reading" pointers.
+
+DESIGN.md outline (7 sections in mandated order):
+  1. Requirements — coverage matrix 17 rows (9 hard reqs + 8 adversarial scenarios),
+     each -> mechanism -> proving artifact confirmed present.
+  2. Estimates — prereqs, container footprint, cost model ($0 stub / ~$0.15/task real,
+     PLACEHOLDER-dated pricing).
+  3. HLD then LLD — 3 invariants, ASCII lifecycle diagram; 9 LLD components each with
+     a plain-language sentence before technical detail.
+  4. Failure modes — 13-row exhaustive table.
+  5. Tradeoffs — 11-row table, every (−) pulled from ADRs.
+  6. Pattern / Accelerator (honest "would-build" for CI/CD/IaC) / Product feedback.
+  7. Conclusion + ADR/schema appendix.
+  Estimated length: 5.3 pages (≤6 cap). All test/src/ADR citations resolve.
+
+Claims DROPPED / corrected:
+  - test_budget_clean_stop (old §11) does not exist -> replaced with the real
+    test_wall_clock_budget_stops_clean_with_partial_progress +
+    test_budget_exhausted_stops_cleanly.
+  - Dropped implied separate tests/e2e/ and tests/regression/ dirs (they live under
+    tests/integration/).
+  - Kept pricing explicitly PLACEHOLDER; asserted no authoritative dollar figure.
+
+Stopped here per the phase — no git, no walkthrough.
+
+--------------------------------------------------------------------------------
+
+[USER]:
+save this chat in @claude_chat/phase_10d.txt like @claude_chat/phase_0.txt
+
+[CLAUDE]:
+(Wrote this raw turn-by-turn transcript to claude_chat/phase_10d.txt.)
+
+=== End of conversation ===

@@ -31,4 +31,7 @@ target/
 
 # Node / TypeScript (sandbox/ts)
 node_modules/
+coverage.xml
+htmlcov/
 *.tsbuildinfo
+.coverage

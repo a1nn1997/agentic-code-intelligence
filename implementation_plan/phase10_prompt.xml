@@ -1,0 +1,775 @@
+<phase_task>
+  <!--
+    Phase 10 is authored to be executed by a SEPARATE agent. That agent MUST
+    first load implementation_plan/phase_agnostic_system_prompt.xml (the
+    Technical-Lead-Orchestrator persona, prime directives, role rotation, and
+    the VERIFIED | NEEDS_REPAIR | BLOCKED output contract) and treat
+    implementation_plan/execution_plan.md as the requirement source of truth.
+    Every unit of work below is gated behind its programmatic oracle exactly as
+    Phases 0-9 were. This file encodes WHAT to do and HOW it is proven; the
+    persona file governs HOW to work.
+  -->
+  <phase>10</phase>
+  <title>Hardening &amp; FDE-Readiness: requirement gap-closure, production-grade
+    refactor (interface-preserving), the full test taxonomy, a privileged admin
+    console, and an FDE-grade DESIGN.md</title>
+
+  <goal>
+    Phases 0-9 built and verified the platform. Phase 10 makes it defensible
+    to a reviewer and deployable by a forward-deployed engineer. It has FIVE
+    parallel-authored but independently-gated workstreams: (A) close every
+    requirement gap and contradiction found in the critique; (B) raise the code
+    to production grade against DRY/SOLID and language best practice WITHOUT
+    changing any external IO/API contract; (C) complete the eleven-layer test
+    taxonomy to the stated coverage bar; (D) add a MASTER admin console for a
+    single hardcoded superuser as an explicitly out-of-band privileged operator
+    plane that does NOT breach the consumer isolation invariant; (E) rewrite
+    DESIGN.md into a forward-deployed-engineer-friendly document that proves
+    every requirement and adds cost, HLD/LLD, failure-modes, tradeoffs, and the
+    FDE sections. Nothing in the plan-of-record capability set may regress.
+  </goal>
+
+  <prime_constraints>
+    <constraint id="interface_preserving">
+      Workstreams A, B, C, E MUST NOT change any externally-observable IO
+      contract: /v1 route shapes, request/response JSON schemas, CLI command
+      surface, the Makefile target names, the sandbox VerificationResult shape,
+      the model XML wire format, or the DB row schemas consumers depend on.
+      Internal refactors (registries, base classes, extracted helpers, typed
+      accessors, transaction consolidation) are in-scope; signature changes on
+      public surfaces are NOT. Any finding tagged interface-affecting below is
+      called out explicitly and must be gated behind a deliberate decision, not
+      applied silently.
+    </constraint>
+    <constraint id="boundary_honesty">
+      Workstream D introduces a PRIVILEGED, cross-tenant surface. This directly
+      tensions with hard requirements #1 (API-only: index/sandbox/model
+      unreachable by consumers) and #2 (per-user isolation by construction). It
+      is FORBIDDEN to satisfy the admin console by adding a cross-tenant read
+      path onto any /v1 route or onto the single published consumer port. The
+      admin plane MUST be a separate auth realm on a separate mount/port,
+      read-mostly, and audit-logged, and the tradeoff MUST be documented in
+      DESIGN.md. The consumer isolation invariant and its proving tests must
+      remain literally true and green.
+    </constraint>
+    <constraint id="no_regression">
+      The full existing suite stays green; `make up` still boots one-command,
+      keyless, in stub mode; `make eval` still passes all >=5 tasks against
+      their oracles. The stub model backend must never import the Anthropic SDK.
+    </constraint>
+    <constraint id="docs_in_pass">
+      Per the persona's docs discipline, each workstream writes its DESIGN.md /
+      ADR section in the same pass — never backfilled. Workstream E is the
+      consolidation, not the first write.
+    </constraint>
+  </prime_constraints>
+
+  <!-- =====================================================================
+       WORKSTREAM A — Requirements critique &amp; gap closure
+       Owner roles: orchestrator + the subsystem expert per gap + verifier.
+       ===================================================================== -->
+  <workstream id="A" name="Requirement gap-closure &amp; contradiction repair">
+    <intent>
+      Re-audit the build against execution_plan.md (§2 hard reqs #1-9, §3
+      adversarial #1-8, §4 doc deliverables, §5 stretch, §7 self-check) and
+      close every gap, stub, unproven claim, and doc/code contradiction. The
+      critique below is the seed work-list; the executing agent must re-verify
+      each item in code before acting and add any it finds.
+    </intent>
+    <deliverables>
+      <d id="A1" severity="high">
+        Polyglot runners + the DESIGN/ADR contradiction. Two coupled problems:
+        (i) §11 "What we cut" says the Phase-8 runners were not implemented while
+        ADR-0003 documents them SHIPPED with a parity table — a self-contradicting
+        requirement-to-proof matrix destroys reviewer trust. (ii) Ground truth is
+        worse than a doc typo: the Go/Rust/TS entrypoints (sandbox/{go,rust,ts})
+        re-implement the harness but their build+test gate is STILL
+        `python3 -m compileall` + `python3 -m pytest` on a python:3.12-slim image
+        (main.go:157,174; main.rs:244,266; main.ts:142,154) — so "parity" is
+        near-tautological (every runner verifies Python). FIX: either make each
+        runner build/test its OWN language (`go test`, `cargo test`, `tsc`+`npm
+        test`) with a per-language fixture, OR reframe ADR-0003 + DESIGN honestly
+        as "language-diverse harness parity, Python verification core" and resolve
+        the cut-vs-shipped contradiction. Pick one and make code+docs agree.
+      </d>
+      <d id="A2" severity="medium">
+        Correctness: loop.py `_do_verify` passes base_commit=task.workspace_id
+        into a field contractually holding the base COMMIT. Pass
+        self._snap.commit (already computed). Latent bug for any real
+        conflict-detecting runner. Add a regression test asserting the verify
+        request carries the resolved commit.
+      </d>
+      <d id="A3" severity="high">
+        Metering dimensions never written (permanently 0). Both
+        tasks.retrieval_bytes AND tasks.sandbox_seconds columns exist
+        (schema.sql:55-56) and are read by the API, dashboard, and TaskStatus
+        (tasks_router.py:124, dashboard_router.py:62-63, loop.py:744-745) — but
+        the ONLY metering UPDATE is _bump_task_tokens (loop.py:696-703), which
+        sets tokens/tool_calls only. Endangers Hard Req #6 (per-task metering) and
+        #9 (per-run trace fidelity). FIX: in _do_retrieve accumulate
+        RetrievalResult.byte_count into tasks.retrieval_bytes; in _do_verify record
+        the sandbox result duration into tasks.sandbox_seconds. Also decide the
+        per-step retrieval step_index tag (retrieval/service.py passes None at all
+        six primitives): wire it through or delete the dead parameter. Add a test
+        asserting a task with retrieval + a verify ends with non-zero
+        retrieval_bytes and sandbox_seconds.
+      </d>
+      <d id="A4" severity="medium">
+        Remove dead/misleading code: loop.py `_replay_data_spans_with_failures`
+        is never called and its body contradicts its docstring. Delete it (the
+        real failure-span reconstruction lives in `_replay_effect`).
+      </d>
+      <d id="A5" severity="low">
+        DESIGN.md §11 "Would do next" lists "Confirm pricing and wire USD stop"
+        twice (#1 and #3) — dedupe. Reconcile the drifted section numbering so
+        every one of the 18 FDE topics (workstream E) has one canonical home.
+      </d>
+      <d id="A6" severity="review">
+        Re-run the §7 pre-submission self-check (10 items) as explicit assertions
+        and record pass/fail with file:line evidence in the DESIGN.md coverage
+        matrix. Any item not backed by a test is a gap to close in workstream C.
+      </d>
+      <d id="A7" severity="critical">
+        Wall-clock budget is stored but NEVER enforced. wall_clock_seconds threads
+        to the task (service.py:60) but _budget_breach (loop.py:621-631) checks
+        only step + token — there is no time check anywhere, so a task on a LIVE
+        model backend can run unbounded in wall-clock. Directly breaks Hard Req #6
+        ("wall-clock deadline") and Adversarial #7 (budget exhausted mid-task).
+        FIX: capture start = time.monotonic() in run() and add to _budget_breach:
+        `if time.monotonic() - start >= task.wall_clock_seconds: return
+        BUDGET_EXHAUSTED(reason)`, stopping at the current journaled checkpoint.
+        Add a test with a tiny wall-clock budget + a slow stub step asserting a
+        clean BUDGET_EXHAUSTED with partial progress and an intact worktree.
+      </d>
+      <d id="A8" severity="critical">
+        The eval harness, the walkthrough demos, and make demo-* verify against a
+        `_FakeSandbox`, not Docker (eval/demo.py:38-55, eval/runner.py:51-91) — the
+        verdict derives from a path/artifact match, not a real build+test. The real
+        Docker verification exists (docker_runner.py:305, sandbox/entrypoint.py:
+        168-192) but is exercised ONLY by Docker-gated integration tests that skip
+        silently when Docker is absent. This hollows the assignment's central proof
+        ("done only after a real build + test in the sandbox", self-check #2/#10).
+        FIX: add a real-Docker eval/demo path (e.g. `make eval-docker`,
+        `make demo-happy SANDBOX=docker`) running the SAME oracles against
+        DockerSandboxRunner, and make the submission proof depend on it; and make
+        the Docker-gated tests FAIL (not skip) when the sandbox image is buildable
+        but tests were skipped (ties to C: Docker layer). At minimum, document
+        loudly that stub-eval uses a fake sandbox and the real proof is the Docker
+        suite. This is the most important correctness-of-claim gap.
+      </d>
+      <d id="A9" severity="high">
+        The concurrent-write guarantee is not wired into the apply path.
+        commit_worktree (workspace/service.py:121-203) implements flock +
+        base-commit-check -> ConflictError and is unit-tested, but grep shows ONLY
+        tests call it: the loop applies edits to the worktree and terminates
+        WITHOUT committing back through the guarded path. So Adversarial #6 ("two
+        tasks edit same workspace concurrently -> never silent clobber") is proven
+        in a helper that production flow never invokes. FIX: on VERIFIED_SUCCESS in
+        APPLY mode, have the loop call commit_worktree(base_commit=handle.base_commit)
+        and handle ConflictError (rebase-reverify or reject). Combine with the B-6
+        atomicity fix. Add an integration test where two concurrent APPLY tasks on
+        one workspace resolve to exactly one commit + one ConflictError.
+      </d>
+      <d id="A10" severity="high">
+        Per-key rate limiting is documented but entirely absent. auth.py:7 claims
+        "per-key rate limit (sliding window counted in the DB)" and schema.sql:22
+        carries rate_limit_per_min, but require_auth enforces nothing — no window
+        count, no 429, no test. A false security claim endangers Hard Req #3. FIX:
+        implement a DB- or memory-backed sliding-window counter in require_auth
+        returning 429 on breach (+ a test), OR, if descoped, delete the claim from
+        the docstring and DESIGN and record the decision. Do not leave it claimed
+        but unimplemented.
+      </d>
+      <d id="A11" severity="medium">
+        Multi-file rename uses non-scope-aware whole-file substitution
+        (loop.py:505 `original.replace(old_name, new_name)`) — renaming `user`
+        corrupts `user_id`, `username`, etc. Endangers Stretch #2 correctness and
+        can ship a broken rename past a weak test suite. FIX: replace only
+        identifier tokens using the index's reference SPANS (line/col), not raw
+        substrings. Add the name-collision test from workstream C. (Interface-
+        preserving; internal to _do_rename.)
+      </d>
+    </deliverables>
+    <oracle>
+      Each fixed gap has a test that fails before the fix and passes after (A2,
+      A3, A7, A9, A10, A11). Wall-clock exhaustion produces a clean
+      BUDGET_EXHAUSTED with partial report and intact worktree (A7). A real-Docker
+      eval/demo path runs the same oracles and the Docker suite FAILS rather than
+      skips when the image is buildable (A8). Two concurrent APPLY tasks resolve to
+      one commit + one ConflictError via the production path (A9). A burst past
+      rate_limit_per_min returns 429 — or the claim is removed (A10). retrieval_bytes
+      and sandbox_seconds are non-zero after a real run (A3). No grep hit for the
+      dead method (A4). DESIGN.md and ADR-0003 agree on polyglot status and each
+      runner's actual verification language is stated truthfully (A1). The §7
+      self-check table is present and every row cites evidence (A6). The critique
+      is delivered as a written gap register (docs/critique.md or a DESIGN.md
+      appendix) mapping every requirement to fulfilled / partial / missing with
+      evidence and severity.
+    </oracle>
+  </workstream>
+
+  <!-- =====================================================================
+       WORKSTREAM B — Production-readiness refactor (interface-preserving)
+       The findings are grouped by severity. Each cites file:line. Fix in
+       small reviewable commits; the verifier re-runs the full suite after each.
+       ===================================================================== -->
+  <workstream id="B" name="DRY / SOLID / pattern hardening — no IO change">
+    <intent>
+      Apply targeted, interface-preserving fixes that raise the code to
+      production grade. Prefer the language-idiomatic pattern (registry,
+      command/strategy, repository, composition-root/DI, context-manager,
+      thread-local/pooled connection) over ad-hoc branching. Every fix keeps
+      the public surface byte-identical.
+    </intent>
+
+    <critical>
+      <fix id="B-CRIT-1" file="src/acp/db/connection.py:35,68-88" principle="concurrency">
+        The Database facade shares ONE sqlite3.Connection (check_same_thread=
+        False) with no lock/pool across FastAPI sync (`def`) endpoints, which
+        Starlette runs on a threadpool. Two threads entering `immediate()`
+        collide ("cannot start a transaction within a transaction") or one COMMIT
+        prematurely commits another's half-written work — BEGIN IMMEDIATE only
+        serializes across SEPARATE connections. This undermines the WAL+IMMEDIATE
+        serialization the whole ledger/journal correctness story rests on.
+        FIX: thread-local connection factory (or a small per-worker pool), each
+        opened once with the same pragmas; or wrap `immediate()` and raw reads in
+        a threading.RLock (simpler, correctness-preserving, acceptable throughput
+        cost at demo scale). Public methods (immediate/conn/close, all repo APIs)
+        unchanged. This is the single highest-leverage fix and gates B-* below.
+      </fix>
+    </critical>
+
+    <high>
+      <fix id="B-1" file="src/acp/model_gateway/claude.py:58-67" principle="error-handling">
+        Wrap client.messages.create() and map anthropic.RateLimitError /
+        APIStatusError / APIConnectionError / AuthenticationError onto a new
+        typed UpstreamModelError(ACPError) (carry request_id, never the key or
+        channel content). Today a raw SDK exception aborts the run before the
+        journal row is written, forcing a paid re-issue on resume. Success-path
+        ModelResponse contract unchanged.
+      </fix>
+      <fix id="B-2" file="src/acp/model_gateway/claude.py:61-68" principle="error-handling">
+        Inspect stop_reason before joining text: raise distinct typed errors for
+        "refusal" (empty content, HTTP 200) and "max_tokens" (truncation). Today
+        both surface as a misleading generic "not well-formed XML" from
+        parse_action. Only assemble XML on end_turn.
+      </fix>
+      <fix id="B-3" file="src/acp/retrieval/service.py:94-130" principle="concurrency">
+        `_charge` does check-then-act over the ledger across 4+ independent
+        transactions (remaining_tokens SELECTs, then RESERVE/COMMIT/RELEASE each
+        in its own immediate()), despite the docstring claiming atomicity. Two
+        concurrent retrievals on one scope can both pass the check and overshoot
+        the budget (TOCTOU). Add LedgerRepo.charge_atomic(...) doing the SELECT
+        SUM and the inserts under ONE BEGIN IMMEDIATE. BudgetExceeded / no-write-
+        on-refusal semantics and RetrievalResult unchanged.
+      </fix>
+      <fix id="B-4" file="src/acp/gateway/tasks_router.py:146-199" principle="honesty/error-handling">
+        create_task injects BackgroundTasks but never uses it; submit() runs the
+        full loop inline and blocks up to max_wall_seconds while the docstring
+        claims async 202. Decide: (a) truly schedule via background_tasks.add_task
+        (SSE already exists to stream progress) returning the PENDING snapshot, or
+        (b) delete the unused param and correct the docstring to "runs to terminal
+        before 202". Response schema/status unchanged. Note (a) changes WHICH
+        metering snapshot is returned — pick deliberately.
+      </fix>
+      <fix id="B-5" file="src/acp/sandbox_client/docker_runner.py:100-113,148-199,297-302" principle="SRP/parity">
+        Kill/OOM/network classification uses Python/glibc-flavored substring
+        markers baked into the runner and inherited unaudited by the Go/Rust/TS
+        polyglot subclasses — a Rust phone-home may be misclassified as an
+        ordinary test failure, silently weakening the parity claim. Extract a
+        unit-testable ResultParser and make the network/OOM marker set a
+        per-runner override. SandboxClient protocol + VerificationResult unchanged.
+      </fix>
+      <fix id="B-6" file="src/acp/workspace/service.py:121-203" principle="concurrency">
+        commit_worktree's base-commit check + copytree + set_head is a
+        read-modify-write across FS and DB not in one transaction; a crash between
+        copytree and set_head leaves on-disk state and recorded head inconsistent,
+        weakening the "no silent clobber" ConflictError guarantee. Make the DB the
+        commit point: conditional `UPDATE ... WHERE head_commit=:base` inside one
+        immediate() (rowcount==0 -> ConflictError), copy to temp + atomic rename.
+        Keep flock as optimization. Signature/contract unchanged. NOTE: pairs with
+        A9 — this atomicity fix is moot until the loop actually CALLS
+        commit_worktree on apply, which A9 wires in.
+      </fix>
+      <fix id="B-7" file="src/acp/gateway/dashboard_router.py:44-49 vs tasks_router.py:107-112" principle="DRY">
+        Two cost calculators (dashboard hardcodes per-token constants; tasks_router
+        reads settings price_per_1k_*). They agree numerically today but are two
+        sources of truth flagged PLACEHOLDER. Extract one cost function
+        (common/pricing.py or on Settings); both routers call it; delete the
+        hardcoded pair. cost_usd field + rounding preserved.
+      </fix>
+    </high>
+
+    <medium>
+      <fix id="B-8" file="src/acp/orchestrator/loop.py:388-414,563-605,634-680" principle="DIP/typing">
+        AgentLoop reaches around its repos: `_committed_model_steps` runs raw SQL
+        with a `note LIKE 'model:%'` string that belongs in LedgerRepo; and
+        json.loads(payload_json) with scattered .get() defaults is repeated in 7+
+        methods. Add LedgerRepo.committed_step_indices(scope, task_id) and a typed
+        StepPayload (dataclass/TypedDict) with from_journal(entry). Public run/
+        events/resume signatures unchanged.
+      </fix>
+      <fix id="B-9" file="src/acp/orchestrator/loop.py:308-327,755-763" principle="OCP">
+        Command/Strategy for effects: replace the _run_effect if/elif ladder +
+        the separate _kind_for_action map + the _replay_effect ladder with a
+        dict[ActionKind, EffectHandler] (run/replay) and one ActionKind->StepKind
+        table. A new verb becomes one registration instead of edits in five
+        places. Journal payloads + terminal semantics identical.
+      </fix>
+      <fix id="B-10" file="src/acp/orchestrator/loop.py:181-246" principle="SRP">
+        Extract the ~65-line per-step body of run() into `_advance(...) ->
+        StepOutcome` (Continue | Terminate(state,reason) | EnterRepair) so each
+        transition is unit-testable and the state machine is data, not control
+        flow. run() stays a thin loop; public contract preserved.
+      </fix>
+      <fix id="B-11" file="src/acp/orchestrator/loop.py:485-488" principle="perf">
+        _do_rename builds a FULL fresh IndexBuilder().build() on every rename step
+        inside the loop, re-parsing the whole repo, though self._retrieval already
+        holds the cached index for this snapshot. Resolve affected files via the
+        cached index; move the import to module top. Same file set, no IO change.
+      </fix>
+      <fix id="B-12" file="src/acp/model_gateway/gateway.py:54-69" principle="OCP">
+        Replace build_model_gateway's if/elif with a
+        dict[BackendChoice, Callable[[Settings], ModelBackend]] registry; keep the
+        SDK import lazy inside the claude factory so the stub path stays keyless.
+        Signature/return unchanged. (Same registry idea for build_sandbox_client.)
+      </fix>
+      <fix id="B-13" file="src/acp/model_gateway/claude.py:29-35 &amp; prompt.py:123-131" principle="DRY/security">
+        The trust-boundary system prompt exists twice with DIVERGENT text and one
+        copy OMITS the `rename` verb though the parser allows it. Derive the
+        system text and the verb list from a single constant generated from
+        ActionKind (', '.join(k.value ...)); both consumers read it. Wire format
+        unchanged. Security-critical — dedupe so the model's allowlist claim can
+        never drift from the parser's.
+      </fix>
+      <fix id="B-14" file="src/acp/retrieval/redaction.py:75-133" principle="security/SRP">
+        Redaction depends on regex ordering + a 3-name allow-list, and
+        _SECRET_VALUE stops at whitespace so multi-line PEM keys / spaced secrets
+        are only partially redacted. Add explicit rules for PEM BEGIN/END blocks
+        and long base64 runs; make _RULES injectable (default preserved); replace
+        the in-loop nonlocal-count closure with a pure substitution fn.
+        RedactionResult + marker format (idempotence/determinism) preserved.
+      </fix>
+      <fix id="B-15" file="src/acp/gateway/dashboard_router.py:75-186 &amp; repositories.py:166-172" principle="perf/correctness">
+        dashboard_summary is O(tasks x steps) N+1 (a get_trace per task) AND uses
+        the default list limit=100, so tasks_total/total_cost silently undercount
+        a user with >100 tasks while being named "total". Push aggregation into
+        SQL (JournalRepo.count_by_kind via JOIN..GROUP BY; a metering SUM/COUNT
+        over ALL the user's tasks). JSON keys unchanged; values become truthful.
+      </fix>
+      <fix id="B-16" file="src/acp/gateway/app.py:60-92,170" principle="DIP">
+        create_app does side-effecting IO at call time and builds the sandbox
+        client TWICE; worse, module-level `app = create_app()` runs all of it at
+        import. Build the sandbox once and share it (readyz == orchestrator, as
+        the comment already claims); move the module-level app behind uvicorn
+        `--factory` or guard it so import is IO-free.
+      </fix>
+      <fix id="B-17" file="src/acp/db/repositories.py:195-221,38-46" principle="concurrency/typing">
+        JournalRepo.append reads back with get_step() OUTSIDE the write txn (the
+        resume substrate — a subtle interleave undermines effectively-once). Do the
+        read-back INSIDE the immediate() block. Also stop `create()` returning
+        `self.get(...) # type: ignore` (Optional cast to non-None); read back
+        within the same txn or raise. Tuple/return shapes preserved.
+      </fix>
+      <fix id="B-18" file="src/acp/sandbox_client/docker_runner.py:116-126" principle="LSP">
+        DockerSandboxRunner.verify() raises the builtin NotImplementedError, which
+        the ACPError handler will NOT map — leaks a 500 + stack trace. Raise
+        NotImplementedInPhase (like the stub) or implement it. One-line, interface
+        preserved.
+      </fix>
+      <fix id="B-19" file="src/acp/workspace/service.py:296-303" principle="security">
+        The zip path calls extractall() after a pre-scan but does not defend zip
+        symlink members or decompression-ratio (zip-bomb) — weaker than the tar
+        path's filter='data'. Reject symlink members and cap total uncompressed
+        size. Legitimate-archive behavior unchanged.
+      </fix>
+      <fix id="B-20" file="src/acp/orchestrator/service.py:66-84 &amp; loop.py:735-748" principle="DRY">
+        get_status duplicates TaskStatus construction (with a divergent step_index
+        semantic and no dry_run patch) already done in AgentLoop._status. Extract
+        one TaskStatus.from_task(...) factory both call. Wire shape unchanged.
+      </fix>
+      <fix id="B-21" file="src/acp/db/repositories.py:311-318 &amp; schema.sql:78-86" principle="security">
+        assert_owned() is defense-in-depth but never wired; triggers block UPDATE
+        on journal/budget_ledger but not DELETE. Either add guarded BEFORE DELETE
+        triggers (allow the tasks ON DELETE CASCADE path, abort ad-hoc deletes) or
+        at minimum wire assert_owned() into the one unscoped getter
+        (get_for_resume) that crosses the trust boundary. No public API change.
+      </fix>
+    </medium>
+
+    <low_and_patterns>
+      <fix id="B-22" file="src/acp/index/languages.py:44-57" principle="concurrency">
+        @cache caches the STATEFUL tree-sitter Parser as a process-global; Parser
+        is not thread-safe. Cache only the immutable Language; create/threadlocal
+        the Parser per parse(). Signature/output unchanged.
+      </fix>
+      <fix id="B-23" file="src/acp/index/model.py:110-160" principle="perf">
+        definitions()/references_of() flatten+sort ALL symbols/refs per call
+        (hot path + rename). Build lazy name-&gt;symbols / name-&gt;refs maps behind
+        the same methods, invalidated on put_file/drop_file. Sort/serialize
+        determinism preserved.
+      </fix>
+      <fix id="B-24" pattern="composition-root/DI" file="cli/main.py, gateway/app.py, orchestrator/service.py">
+        Object-graph wiring (Settings-&gt;Database-&gt;Repos-&gt;Services-&gt;Sandbox-&gt;Model)
+        is assembled ad hoc in >=3 modules and drifts (cli calls init_db, gateway
+        assumes it done). Add one acp.bootstrap composition root
+        (build_database/build_workspace_service/build_orchestrator) consumed by
+        BOTH cli and app. Entrypoint signatures unchanged.
+      </fix>
+      <fix id="B-25" pattern="base-repo + context-manager">
+        Introduce BaseRepo(db) with _fetchone/_fetchall/_write helpers (single seam
+        for the B-CRIT-1 connection fix) and give Database __enter__/__exit__ so
+        CLI/tests close connections deterministically. Additive; names/returns
+        preserved. Also dedupe the copy-pasted `_get_db(request)` into one
+        gateway/deps.py, and the two task-&gt;dict serializers into one projection.
+      </fix>
+      <fix id="B-26" file="src/acp/db/models.py:19-21" principle="OCP">
+        _Row.from_row does cls(**dict(row)); a new schema column breaks all reads.
+        Add model_config = ConfigDict(extra='ignore') (or document strict parity).
+      </fix>
+      <fix id="B-27" file="src/acp/common/security.py:33-36" principle="security" note="optional-hardening">
+        Keep constant-time compare; optionally add a server-side pepper (HMAC-
+        SHA256 with a settings secret) so a DB-only leak yields nothing. Do NOT
+        switch to bcrypt/argon2 for high-entropy random tokens. Interface-preserving.
+      </fix>
+    </low_and_patterns>
+
+    <oracle>
+      Full suite green after EACH fix (no regression). B-CRIT-1 proven by a new
+      concurrency test that drives N concurrent write requests and asserts no
+      "transaction within a transaction" / no lost write (fails on the shared
+      connection, passes after). B-3 proven by a concurrent-retrieval test that
+      asserts the budget ceiling is never overshot. B-6 proven by a
+      crash-between-copy-and-head test asserting head/FS stay consistent and a
+      re-commit raises ConflictError. B-13 proven by a test asserting the system
+      prompt's verb list equals {k.value for k in ActionKind}. ruff + mypy clean.
+      No public route/CLI/schema diff (assert the OpenAPI JSON and CLI --help are
+      unchanged before/after). Every interface-affecting item (B-4a) is an
+      explicit, recorded decision.
+    </oracle>
+  </workstream>
+
+  <!-- =====================================================================
+       WORKSTREAM C — The eleven-layer test taxonomy to the coverage bar
+       Targets: 85% overall, 90% critical-path, 98%+ pass rate, 100% of
+       previously-fixed bugs regression-guarded, 100% client-requirement coverage.
+       ===================================================================== -->
+  <workstream id="C" name="Comprehensive test suite — 11 layers + coverage gates">
+    <intent>
+      Extend the existing pyramid (unit/integration/smoke + eval) to the full
+      taxonomy and wire an enforced coverage gate. Every hard requirement and
+      adversarial scenario must have a test that would FAIL if the mechanism
+      were removed. Prefer real mechanism assertions over proxies.
+    </intent>
+    <coverage_tooling>
+      <d>Add pytest-cov to pyproject with `--cov=src/acp --cov-report=term-missing
+        --cov-fail-under=85`; mark the critical-path packages (orchestrator, db,
+        retrieval, gateway) for a 90% sub-target. Wire `make test` to run with
+        coverage and `make test-coverage` to emit the report. CI-style gate:
+        the suite fails below threshold.</d>
+    </coverage_tooling>
+    <layers>
+      <layer name="Unit" target="90-100%">
+        Fill gaps exposed by workstream B: the extracted _advance/StepOutcome
+        state transitions, StepPayload.from_journal, the EffectHandler registry,
+        ResultParser kill-classification (per-runner markers), redaction rule
+        table incl. PEM/base64, the cost function, LedgerRepo.charge_atomic and
+        committed_step_indices. Every common/ util (errors mapping, security
+        hash/verify/split_token, logging context, types enums) unit-covered.
+      </layer>
+      <layer name="Integration" note="present-extend">
+        Keep existing index-&gt;task-&gt;verified E2E; add cross-module: retrieval
+        budget shared with loop; workspace worktree isolation under the fixed
+        connection model; dashboard aggregates vs raw repo truth.
+      </layer>
+      <layer name="Functional" gap="build-out">
+        End-to-end business workflows against the sample repo through the PUBLIC
+        API only: happy single-file change; self-repair recovery; multi-file
+        rename hitting every call site; dry_run returns a patch without applying;
+        budget-exhaustion clean stop with partial report. Assert terminal state
+        + journal shape, not internal calls.
+      </layer>
+      <layer name="API Contract" gap="add">
+        Snapshot-assert the OpenAPI schema for every /v1 route (status codes,
+        request/response models) so an accidental contract change fails the
+        build. Assert error bodies are the structured {error: code} form and
+        carry x-request-id. This layer also guards workstream B's "no IO change".
+      </layer>
+      <layer name="Database" gap="add">
+        Constraint + integrity: UNIQUE (task_id, step_index) idempotency; the
+        append-only UPDATE-block triggers (and the DELETE decision from B-21);
+        WAL + BEGIN IMMEDIATE serialization under the fixed connection model;
+        ledger reserve/commit/release invariants; foreign-key cascade behavior.
+        A lightweight query-cost check on the summary aggregate (post B-15).
+      </layer>
+      <layer name="Performance" gap="add">
+        Latency/throughput smoke with SLA assertions: p50/p95 for a stub-mode
+        task run; concurrent-task throughput (N parallel submits) proving the
+        connection fix; retrieval hot-path after the index-map fix (B-23);
+        assert no O(repo) re-index on rename (B-11). Keep them fast + deterministic
+        (stub model), gated so they can run in CI.
+      </layer>
+      <layer name="Security" priority="high">
+        Authn/authz: no key -&gt; 401; malformed token -&gt; 401; per-key rate limit
+        trips. Injection: the planted adversarial instruction in the sample repo
+        never becomes a command (differential byte-identical-journal proof).
+        Secret-exfil: planted .env secret never appears in retrieval output, model
+        prompt, or sandbox egress; PEM/multiline secret redacted (B-14).
+        Path-traversal: worktree edit escape rejected; zip/tar slip + symlink
+        rejected (B-19). Sandbox: network call fails closed; wall-clock kill;
+        (document, and test where feasible, OOM/pids).
+      </layer>
+      <layer name="Smoke" note="present-extend">
+        Keep /healthz /readyz; add a post-deploy smoke that `make up` boots
+        keyless and a trivial task reaches a terminal state.
+      </layer>
+      <layer name="Edge Case" gap="build-out">
+        Budget boundaries: exactly-at-limit, zero budget, 1-token budget, step
+        budget of 0. Resume/replay: kill between journal-append and ledger-commit
+        (assert charged exactly once); double-resume of a terminal task is a
+        no-op; resume rebuilds the data channel incl. failure spans. Concurrent
+        worktree clobber -&gt; ConflictError, never silent overwrite. Model I/O:
+        malformed XML, empty content (refusal), truncated (max_tokens) each
+        surface a distinct typed error (B-1/B-2). Repo shapes: empty repo, a repo
+        with no test suite, unicode/space filenames, non-UTF-8 file, very large
+        file span read (B: bounded read). Name-collision symbol across Python+TS
+        for rename.
+      </layer>
+      <layer name="Multitenancy" priority="high">
+        User A cannot read/trace/aggregate user B's tasks (404 NotFound, existence
+        not leaked) on EVERY /v1 and /v1/dashboard route; user_id is derived only
+        from the key, never from body/header (attempt to forge is ignored). After
+        workstream D: assert NO /v1 route and the published consumer port expose
+        any cross-tenant path — the admin plane is unreachable from the consumer
+        surface.
+      </layer>
+      <layer name="Feature-Based" gap="add">
+        Config-swap behavior: SANDBOX_RUNNER=python|go|rust|ts each pass the SAME
+        Phase-3 oracle (parity); MODEL_BACKEND=stub never imports the SDK and is
+        deterministic; the admin console honors its enable flag / separate mount.
+        If workstream D adds runtime feature flags, test toggle + audit-row.
+      </layer>
+    </layers>
+    <oracle>
+      `make test` runs with coverage and fails under 85% overall / 90% on
+      critical packages; pass rate >=98%. Every §2 hard requirement and §3
+      adversarial scenario maps to at least one named test (a traceability table
+      in the test docs). Each workstream-A bug fix has a regression test. The
+      full matrix of SANDBOX_RUNNER values passes the shared sandbox oracle.
+    </oracle>
+  </workstream>
+
+  <!-- =====================================================================
+       WORKSTREAM D — Master admin console (privileged, out-of-band)
+       ===================================================================== -->
+  <workstream id="D" name="Superuser admin console — separate realm, read-mostly, audited">
+    <intent>
+      Provide a Django-admin-style master console for a single superuser that
+      surfaces the OpenAPI contract, billing/metering, logs, DB tables, health,
+      and feature metrics/flags in ONE view — WITHOUT breaching consumer
+      isolation. The current /dashboard is an unprivileged, user-scoped consumer
+      and MUST stay that way; the admin plane is a distinct, privileged operator
+      surface.
+    </intent>
+    <architecture_rules>
+      <r>SEPARATE AUTH REALM: HTTP Basic (or a signed short-TTL session cookie),
+        require_superuser dependency, entirely distinct from require_auth. A
+        tenant API key can NEVER escalate to admin. No is_admin flag bolted onto
+        the users/api_keys tables.</r>
+      <r>SEPARATE MOUNT / NON-PUBLISHED PORT: mount as a sub-app (e.g. /__admin)
+        whose routes are NOT in the public router set, or run as a separate ASGI
+        process bound to a loopback/ops-only port — never on the single published
+        gateway consumer port. It must be architecturally impossible to reach an
+        admin route from a /v1 path or the consumer port.</r>
+      <r>READ-MOSTLY over already-emitted data (tasks, journal, budget_ledger,
+        api_keys METADATA). The admin NEVER invokes the agent brain and NEVER
+        opens a new path into the index/sandbox/model. The ONLY write is an
+        audited feature-flag toggle (if D6 is built).</r>
+      <r>AUDIT-LOGGED: an audit_log table (actor, action, target, ts, request_id);
+        one row per admin request. Column redaction map: api_keys.key_hash and any
+        secret is NEVER returned by any admin view.</r>
+      <r>CREDENTIAL HONESTY: the hardcoded ann/123 is DEMO-ONLY. Source it from
+        settings (ACP_ADMIN_USER / ACP_ADMIN_PASSWORD_HASH via the existing
+        hash_secret) with a LOUD startup warning when it equals the demo default.
+        Never ship a literal ann/123 in code as a real superuser.</r>
+    </architecture_rules>
+    <deliverables>
+      <d id="D1" feature="health" risk="low" first="true">Health tile: render /healthz + /readyz checks{} (database, sandbox) + model_backend/env from settings. Lowest risk — build first.</d>
+      <d id="D2" feature="api-contract" risk="low-med">Serve the admin sub-app's own Swagger (get_swagger_ui_html) behind require_superuser; render the PUBLIC contract read-only via app.openapi() in an iframe/pre. Do not widen the public /docs.</d>
+      <d id="D3" feature="billing" risk="high">Cross-tenant billing rollup: add LedgerRepo.committed_cost_usd(scope) + list_ledger(scope), UsersRepo.list(), admin-only TasksRepo.list_all()/ApiKeysRepo.list_all() (metadata, NO key_hash). Show $/task, $/user, $/day, budget-vs-consumed. Uses the unified cost fn from B-7. These cross-tenant queries live ONLY on the admin realm.</d>
+      <d id="D4" feature="logs" risk="high">Log browser: a logging.Handler mirroring the last N JSON lines into an in-memory ring buffer on app.state, exposed at an admin-only GET; annotate it is process-local (docker logs are the durable source). Never re-introduce secrets; keep redaction discipline.</d>
+      <d id="D5" feature="db-tables" risk="critical">Read-only DB browser: GET /__admin/db/{table} where {table} is validated against a FIXED allowlist (query built from a constant map — never string-interpolated), SELECT-only with LIMIT/OFFSET, and a column-redaction map that strips key_hash. This deliberately bypasses tenant scoping — document why it must live in the separate realm.</d>
+      <d id="D6" feature="feature-flags+metrics" risk="med">Surface /metrics and effective Settings read-only. If runtime flags are wanted, add a feature_flags table + FlagsRepo (get_all/set) with an admin-only, audit-logged toggle — the sole admin write. Document the departure from the stateless-dashboard philosophy.</d>
+    </deliverables>
+    <oracle>
+      (1) A tenant API key on any admin route -&gt; 401/403 (no escalation).
+      (2) The published consumer port exposes ZERO admin routes and ZERO
+      cross-tenant path (grep the public router set + an HTTP test hitting the
+      consumer port for /__admin -&gt; not found). (3) The existing /v1 isolation
+      tests still pass unchanged (user A cannot see user B). (4) No admin view
+      ever returns key_hash or a secret (assert on responses). (5) Every admin
+      request writes an audit row. (6) DB browser rejects a non-allowlisted table
+      and cannot be SQL-injected. (7) Superuser auth works with the settings-
+      sourced credential and warns on the demo default. (8) `make up` still boots
+      keyless; the admin plane is opt-in and never blocks the consumer path.
+    </oracle>
+    <docs>DESIGN.md gains an "Operator/Admin plane" subsection stating the
+      privileged surface honestly: separate realm + separate port + read-mostly +
+      audit, WHY it does not violate the consumer API-only/isolation invariant,
+      and the explicit tradeoff (a declared, contained exception, not a silent
+      breach). Update the route inventory and the API-only boundary proof.</docs>
+  </workstream>
+
+  <!-- =====================================================================
+       WORKSTREAM E — FDE-grade DESIGN.md (strict-to-spec + FDE caveat)
+       ===================================================================== -->
+  <workstream id="E" name="Rewrite DESIGN.md for a forward-deployed engineer">
+    <intent>
+      Keep the strong existing content (retrieval-vs-RAG, agent loop, sandbox,
+      trust boundary, effectively-once) and restructure into an FDE-friendly doc
+      where every assignment requirement is provably fulfilled and the missing
+      FDE sections are added. Fix the contradictions from workstream A first.
+    </intent>
+    <required_sections>
+      <s n="0" status="add-top">Executive requirement-coverage matrix at the TOP:
+        one row per assignment requirement (not just the internal 8) — req |
+        mechanism | proof (test file) | quantified status (e.g. "5/5 eval, N/N
+        tests"). Bidirectional traceability: assert every ask maps to >=1 row.</s>
+      <s n="1" status="upgrade">Architecture &amp; data-flow: keep the box diagram
+        but ADD a request-lifecycle sequence diagram (consumer-&gt;gateway/auth-&gt;
+        orchestrator-&gt;retrieval/index-&gt;model-&gt;worktree-&gt;sandbox-&gt;journal/ledger-&gt;
+        SSE) showing where budget gate, redaction, and XML channels sit. Render at
+        least one as a real image (Mermaid/SVG); reconcile the DESIGN vs README
+        diagrams so they don't drift.</s>
+      <s n="2" status="add-label">HLD: a dedicated high-level section — module
+        decomposition + responsibilities, control-plane vs sandbox tier, the key
+        invariants ("API is the only door", "sandbox is the oracle", "journal is
+        source of truth"), major data stores. Labeled HLD by name.</s>
+      <s n="3" status="add-label">LLD: consolidate the (already strong) low-level
+        detail under an explicit label — per-module Protocol/interface file, the
+        core data structures (Symbol/Reference/ImportEdge/Index), the DB DDL
+        (pull the appendix up), the action vocabulary/state types; each LLD claim
+        names module + interface + impl + proving test.</s>
+      <s n="4" status="keep">Retrieval vs naive RAG — add one QUANTITATIVE example
+        (repo size -&gt; naive tokens vs structural tokens for the rename).</s>
+      <s n="5" status="keep">Agent loop + 3 terminal states + replayability — add a
+        real state-transition diagram incl. the REPAIR loop and _MAX_REPAIR_ATTEMPTS
+        bound so "always terminates" is provable at a glance.</s>
+      <s n="6" status="consolidate">User isolation + org/tenant extension + where it
+        breaks — consolidate the two divergent treatments (§4 and §11) into one;
+        surface the ADR-0002 "same-UID-on-disk, not full OS compromise" limit.</s>
+      <s n="7" status="keep">Prompt-injection trust boundary — enumerate the defense
+        LAYERS as one numbered stack (index ignores comments/strings -&gt; retrieval
+        redaction -&gt; XML channels + closed allowlist -&gt; sandbox egress-deny) and
+        note the residual "real-backend honors the boundary" monitoring story.</s>
+      <s n="8" status="keep">Sandbox &amp; egress — surface the shared-kernel /
+        gVisor-Firecracker residual from ADR-0003; state whether ANY egress is ever
+        needed (dependency install) and how (pre-baked image) — an FDE deploy concern.</s>
+      <s n="9" status="build-out">Metering &amp; cost — TWO additions the spec asks for
+        that are ABSENT: (1) a back-of-envelope RUN cost (sandbox-seconds -&gt; CPU-hrs
+        -&gt; $/hr; control-plane instance; SQLite-&gt;Postgres at scale; sandbox
+        concurrency fleet sizing) as $/1000-tasks or $/month; (2) cost KPIs with
+        targets ($/verified-change, $/task p50/p99, % budget-exhausted, model spend
+        as % of total). Replace the PLACEHOLDER Sonnet price with a real dated figure.</s>
+      <s n="10" status="build-out">SLOs / capacity / runbook — add capacity numbers
+        (max concurrent tasks bounded by the connection model, sandbox concurrency
+        ceiling, gateway req/s, scaling seam per limit); expand the runbook beyond
+        "top two" to every operational failure (see s.11); mark measured vs
+        aspirational SLOs + the alerting that enforces them; add on-call/paging.</s>
+      <s n="11" status="add">Failure Modes &amp; Mitigations — a single EXHAUSTIVE
+        table (mode | trigger | detection | mitigation | residual | proof)
+        consolidating every failure scattered across the doc PLUS the unaddressed
+        ones: non-deterministic model reply on resume, model API outage/rate-limit,
+        SQLite writer-lock starvation, disk/tmpfs exhaustion, Docker daemon crash
+        mid-verify, corrupted index.json, zip/tar-slip, repo with no tests, stale/
+        missing sandbox image, journal/ledger trigger failure, semantically-wrong
+        patch that passes a weak test, budget too low to ever succeed. This is the
+        single biggest technical doc gap today.</s>
+      <s n="12" status="add">Tradeoffs — one consolidated table (decision | gain |
+        cost | when the cost bites | mitigation/exit) pulling every (−) out of the
+        7 ADRs: monolith blast radius, SQLite single-writer ceiling, structural-
+        index name+language scoping + single-JSON scaling, Docker shared-kernel,
+        str.replace substring hazard, whole-file JSON patch (no partial diff),
+        API-keys vs JWT/mTLS, effectively-once "per journaled decision" caveat,
+        stub-determinism not exercising real-model nondeterminism, placeholder
+        pricing. State explicitly it lists EVERY tradeoff.</s>
+      <s n="13" status="add">FDE Contract — the engagement contract: what the FDE
+        delivers (a verified-change platform against the CLIENT repo), the interface
+        boundary (client provides repo access + runnable test suite + budget policy
+        + model key; ACP provides the API + guarantees), acceptance = the eval
+        oracle, the guarantees (isolation, budget ceiling, verified-only delivery,
+        no secret exfil) and client responsibilities (repo MUST have a runnable
+        test suite — today an implicit assumption). Fully missing today.</s>
+      <s n="14" status="add">FDE Pattern — the repeatable per-client deployment
+        pattern: the declarative task spec letting held-out repos drop in with no
+        code change, the config-only surface (ACP_ env, SANDBOX_RUNNER, budget/
+        price), what adapts per client (grammars, test-runner cmd, redaction rules)
+        vs what is invariant, and the onboarding runbook (point at repo -&gt; make
+        install -&gt; make eval -&gt; tune budget). Frame ACP as a template. Missing.</s>
+      <s n="15" status="add">Accelerator — which parts are reusable IP that speed
+        the NEXT engagement: the eval-harness + oracle pattern, sandbox-as-contract
+        + polyglot runners, structural-index/budgeted-retrieval primitives, the
+        Makefile operator interface, the journal/effectively-once substrate — with
+        the time-to-value each buys. Missing.</s>
+      <s n="16" status="add">Product Feedback — the FDE's upstream feedback: spec
+        gaps/ambiguities found (repo-must-have-tests assumption, no guidance for
+        test-less repos, placeholder pricing blocks a real $/task claim, name-
+        collision rename case, org/tenant scope), likely next client asks (partial-
+        diff patches, more languages, USD hard stop, streaming multi-file review),
+        and product risks observed (str.replace could ship a broken rename past a
+        weak suite). Missing.</s>
+      <s n="17" status="upgrade">What we cut / would do next / Conclusion — fix the
+        duplicate "wire USD stop" and the Phase-8 contradiction (A1/A5); ADD a
+        closing conclusion restating the thesis (verified-only, hand-owned,
+        isolated, budgeted) and the one-line takeaway; distinguish cut vs known-
+        limitation vs tradeoff by cross-referencing s.11/s.12.</s>
+    </required_sections>
+    <caveat>
+      FDE-friendly means: coverage matrix first, altitude ordering (HLD then LLD),
+      every claim cites a proving test, honest about residual risk and tradeoffs,
+      and reusable/onboarding-oriented (contract/pattern/accelerator). Strict to
+      the spec on the mandated sections; the caveat is the added FDE framing on top.
+    </caveat>
+    <oracle>
+      A doc-lint / checklist pass confirms all 18 topics present with the coverage
+      matrix at the top; no internal contradiction (Phase-8 status consistent
+      across DESIGN.md + ADR-0003; no duplicate roadmap item); every proof cell
+      cites a real test path that exists; the RUN-cost estimate and cost KPIs are
+      present with a real (not placeholder) price or a dated citation; the four
+      FDE sections (contract/pattern/accelerator/product-feedback) and a conclusion
+      exist. Keep DESIGN.md within a readable length (link to ADRs for depth).
+    </oracle>
+  </workstream>
+
+  <sequencing>
+    <s>1. B-CRIT-1 (connection serialization) FIRST — it is the substrate the
+      concurrency/DB/perf tests and the admin cross-tenant reads all sit on.</s>
+    <s>1b. The CRITICAL correctness gaps next: A7 (wall-clock enforcement), A8
+      (real-Docker eval/demo path), A9 (wire commit_worktree into apply) — these
+      restore pass/fail requirement claims and each ships its regression test.</s>
+    <s>2. Remaining workstream A gap-fixes + their regression tests (small, unblock
+      trust): A1, A2, A3, A4, A5, A10, A11.</s>
+    <s>3. Workstream B high/medium fixes, each behind a green suite, DESIGN/ADR
+      section updated in the same pass.</s>
+    <s>4. Workstream C layers built alongside B (each B fix ships its test); the
+      coverage gate turned on once thresholds are met.</s>
+    <s>5. Workstream D admin console in risk order D1-&gt;D2-&gt;D6-&gt;D3-&gt;D4-&gt;D5, each with
+      its isolation/audit oracle, on the separate realm/mount.</s>
+    <s>6. Workstream E DESIGN.md consolidation LAST (it must reflect the final
+      state, incl. the admin tradeoff and the real test/eval counts).</s>
+  </sequencing>
+
+  <stop>
+    Phase 10 is done when: every workstream oracle is green; the full suite passes
+    with coverage &gt;=85% overall / 90% critical-path and &gt;=98% pass rate; every §2
+    hard requirement and §3 adversarial scenario maps to a named test; `make up`
+    still boots keyless one-command and `make eval` still passes all tasks; the
+    admin plane is reachable ONLY via its own realm/port and the /v1 isolation
+    proofs are unchanged and green; DESIGN.md contains all 18 FDE topics with a
+    top coverage matrix and no internal contradiction; and no public IO/API/CLI/
+    schema contract changed (proven by an unchanged OpenAPI snapshot + CLI --help),
+    except any interface-affecting item that was an explicit recorded decision.
+    Report: per-workstream VERIFIED/NEEDS_REPAIR/BLOCKED, the coverage number, the
+    list of interface-affecting decisions taken, and anything cut with the reason.
+  </stop>
+</phase_task>

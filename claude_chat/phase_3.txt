@@ -1,0 +1,284 @@
+=== Claude Code Conversation — ACP Phase 3 ===
+Generated on: 2026-07-03
+Model: Claude Opus 4.8 (1M context)
+Format: raw turn-by-turn. [TOOL] lines summarize tool calls/results; all USER
+and CLAUDE prose is verbatim.
+--------------------------------------------------------------------------------
+
+[USER]:
+Read @implementation_plan/execution_plan.md for full project context.
+Phases 0, 1, 2 are complete and green-lit: compose boots with the API-only boundary confirmed; structural Python+TS index (cross-file resolution, incremental==full-rebuild, cross-process determinism); budgeted retrieval with per-call token accounting, reserve/commit refuse-before-charge, snapshot-pinned determinism, and secret redaction inside the retrieval boundary. 73 tests green, ruff + mypy --strict clean. The Makefile now uses `env -u VIRTUAL_ENV poetry run` so make targets bind ./.venv.
+
+@implementation_plan/phase_agnostic_system_prompt.xml is your operating contract — follow it for all work.
+@implementation_plan/phase3_prompt.xml is your current task (Phase 3 only).
+
+Phase 3 is the single most important requirement in the assignment: real sandboxed verification. Treat it accordingly.
+
+Execute Phase 3 now:
+- Work the <work_cycle> from the operating contract; act the specialist roles sequentially, gate each unit behind its Verifier.
+- Emit a <status_block> per unit of work.
+- Verification evidence MUST match the exact oracle clause by its ACTUAL MECHANISM — no proxies. Setting --network=none in config is NOT proof egress is denied: a test must attempt a real network call and confirm it fails closed. The wall-clock kill must be proven with an actual long-running/infinite step that gets killed. Host isolation must be proven by asserting the host filesystem is unmodified after a run.
+- If any resource limit is configured but you cannot test-prove it in this environment, FLAG it explicitly as configured-but-not-yet-proven. Do not report it as verified. An honest "egress-deny is set but untested here" is required over a false "verified."
+- Build against the project's own ./.venv only (run via `make` targets, or `env -u VIRTUAL_ENV poetry run ...`). Docker daemon is required for this phase's oracle.
+- Small, incremental commit-sized units on a phase-3 branch (git still deferred; keep unit boundaries clean).
+- Define VerificationResult as a STABLE contract — Phase 8's Go/Rust/TS runners will conform to the same shape. Do not treat it as an ad-hoc return value.
+- The bad-patch oracle must assert the REAL captured error text is present in the result (not just tests_passed=false) — Phase 5 self-repair reads that output.
+- Reuse the Phase-1 sample repo. Add the known-good / known-bad verification fixture patches for a deterministic, model-free oracle.
+- Stop at Phase 3's <stop>. Do NOT start Phase 4 (agent loop).
+- End by reporting: the SandboxClient/VerificationResult contract as implemented; a per-mechanism enforcement table (network, cpu, mem, disk, wall-clock, user/caps/rootfs — which mechanism enforces which); how real failure output is captured and returned; how the wall-clock kill and egress-deny are PROVEN in tests; how host isolation is asserted; and anything flagged configured-but-not-yet-proven.
+
+[TOOL] Read execution_plan.md, phase_agnostic_system_prompt.xml, phase3_prompt.xml.
+
+[CLAUDE]:
+I'll start by reviewing the operating contract and current project state before executing Phase 3.
+
+[TOOL] Bash `ls -la && ... && docker version` -> DENIED (compound command).
+[TOOL] Bash `ls -la` -> repo tree (DESIGN.md, Makefile, sample_repo/, src/, tests/, .venv/, docker-compose.yml, Dockerfile).
+[TOOL] Bash `docker version` -> Server 29.0.1 (daemon up).
+
+[CLAUDE]:
+Docker 29 is up. Let me survey the existing structure — the Phase-0 SandboxClient stub, the sample repo, config, and the existing test/CLI layout.
+
+[TOOL] Bash `find src sample_repo tests -type f` -> full file listing.
+[TOOL] Read sandbox_client/interface.py, sandbox_client/stub.py, config/settings.py, cli/main.py.
+[TOOL] Read workspace/interface.py, workspace/service.py, sample_repo/backend/tests/test_users.py, sample_repo/README.md.
+[TOOL] Read sample_repo users/service.py + repository.py, common/errors.py, tests/conftest.py, Makefile.
+[TOOL] Read pyproject.toml, gateway/app.py, docker-compose.yml, frontend/tests/users.test.ts.
+[TOOL] Read sample_repo backend/app/users/models.py.
+
+[CLAUDE]:
+## Orchestrator: Phase 3 plan
+Key design decisions:
+1. Sandbox contract — extend the existing VerificationResult minimally (add stage, make killed_reason an enum) and keep it the stable shape Phase 8 conforms to.
+2. The reference runner runs the Python apply->build->test pipeline (compileall build gate + pytest) in a minimal python:3.12-slim sandbox image; TS parity is Phase 8.
+3. Mechanism mapping via docker run flags: --network none / --cpus / --memory+--memory-swap / --read-only + --tmpfs / host-timeout kill / --user + --cap-drop ALL + --read-only + no-new-privileges.
+4. Host isolation: snapshot copied into tmpfs, mounted read-only; assert host tree hash unchanged.
+5. Fixtures: known-good, known-bad (identifiable error text), network-attempt, infinite-loop, OOM.
+
+[TOOL] Bash `docker image inspect python:3.12-slim` + probe tools -> slim absent; patch/git absent inside.
+
+[CLAUDE]:
+Slim image lacks patch and git. ... the contract: patch is an owned JSON envelope of whole-file ops (deterministic, tool-free). I'll build a small dedicated image ... Let me build it.
+
+[TOOL] Bash `git status` / `git branch` -> DENIED.
+
+[CLAUDE]:
+Git is deferred per instructions ... and my global rules forbid git commands. I'll keep clean unit boundaries in commentary only. ... I'll apply the patch inside the container from a JSON envelope — no git/patch binary needed.
+
+[TOOL] Bash `mkdir -p sandbox` -> ok.
+
+[CLAUDE]:
+Now the design of the in-container entrypoint. The entrypoint runs inside the container as the untrusted-code executor. It reads a patch from a mounted read-only path, applies it into a writable tmpfs work dir, runs build + tests, and writes structured JSON to stdout.
+
+[TOOL] Write sandbox/entrypoint.py (in-container runner: copy RO snapshot -> tmpfs, apply JSON patch envelope w/ path-escape guard, py_compile build gate, pytest test stage, sentinel-delimited JSON result, output truncation).
+[TOOL] Write sandbox/Dockerfile (python:3.12-slim + pinned pytest, non-root uid 10001, entrypoint; runtime flags enforce isolation).
+[TOOL] Edit sandbox_client/interface.py — add VerificationStage + KilledReason enums; document patch as owned JSON envelope; make VerificationResult the STABLE contract w/ stage + KilledReason.
+[TOOL] Write sandbox_client/docker_runner.py (DockerSandboxRunner: SandboxLimits, healthy() via image inspect, verify_snapshot, _docker_args w/ every isolation flag, wall-clock timeout->kill, _parse w/ OOM/network classification, sentinel extraction last-wins, infra_error).
+
+[CLAUDE]:
+Let me check redact_secrets signature and the __init__.py export for sandbox_client.
+
+[TOOL] Read retrieval/redaction.py, sandbox_client/__init__.py.
+
+[CLAUDE]:
+redaction exposes redact() returning a RedactionResult, not redact_secrets(). Let me add a thin redact_secrets string helper (reused at the sandbox boundary — the "last layer" story) and update exports.
+
+[TOOL] Edit redaction.py — add redact_secrets(content)->str wrapper (sandbox result-boundary reuse).
+[TOOL] Edit sandbox_client/__init__.py — export DockerSandboxRunner/SandboxLimits/VerificationRequest/Result/Stage/KilledReason.
+
+[CLAUDE]:
+Now the verification fixtures — known-good and known-bad patches, plus adversarial (network, infinite-loop, OOM) patch envelopes. ... Let me first confirm the sample repo file paths.
+
+[TOOL] Read sample_repo models.py.
+[TOOL] Write sandbox_client/fixtures.py (good/bad w/ BAD_PATCH_MARKER, network, infinite_loop, oom, empty patch envelopes).
+[TOOL] Bash `docker build -t acp-sandbox:latest -f sandbox/Dockerfile sandbox` -> built.
+
+[CLAUDE]:
+Image built. Now a manual end-to-end smoke test.
+
+[TOOL] Bash smoke (good + bad) ->
+  healthy: True
+  good: verified=True applied=True built=True tests_passed=True killed=None stage=done
+  bad:  verified=False tests_passed=False killed=None stage=test; bad marker present: True
+
+[CLAUDE]:
+Good/bad work and the real error marker round-trips. Now the harder oracles: network, wall-clock, OOM, and host-isolation.
+
+[TOOL] Bash adversarial smoke ->
+  network: killed=network (fails closed)
+  infinite: killed=deadline, wall=8.007 (killed at deadline)
+  oom: exit=-9 killed=None (NOT yet classified)
+  HOST ISOLATION unchanged: True
+
+[CLAUDE]:
+Four of five clauses proven cleanly ... OOM issue: exit -9 but killed=None ... Let me broaden OOM detection.
+
+[TOOL] Edit docker_runner.py — accept docker_rc in (137, -9) for OOM (no payload case).
+
+[CLAUDE]:
+Wait — -9 is ambiguous ... Let me re-test to confirm the fix, then decide whether to flag it.
+
+[TOOL] Bash re-test OOM -> still killed=None. The -9 path isn't hit.
+[TOOL] Bash raw docker run of oom fixture -> RC=0, payload present, exit_code=-9 inside payload.
+
+[CLAUDE]:
+The OOM kills only the pytest subprocess (exit -9), not the container — the entrypoint survives and emits a valid payload with tests_passed=false, exit_code=-9. ... So OOM detection must happen in the payload path.
+
+[TOOL] Edit docker_runner.py — classify OOM from payload exit_code==-9 with empty output (cgroup killed the test process).
+[TOOL] Bash re-test -> oom: killed=oom exit=-9. All five clauses proven.
+
+[CLAUDE]:
+All five clauses proven. Now for the bounded-allocation contrast test to prove the memory limit genuinely binds ... a fixture that allocates ~200MB — passes under 512MB cap, OOM-killed under 128MB cap.
+
+[TOOL] Edit fixtures.py — add bounded_alloc_patch (~200MB, touches pages).
+[TOOL] Bash contrast -> 512MB cap: verified=True; 128MB cap: verified=False killed=oom. Limit demonstrably binds.
+
+[CLAUDE]:
+The memory limit demonstrably binds ... Now let me wire settings, the CLI command, and write the integration tests. First, add sandbox limit settings.
+
+[TOOL] Edit config/settings.py — add sandbox_image + sandbox_cpus/memory_mb/tmpfs_mb/wall_clock_seconds/pids.
+[TOOL] Edit sandbox_client/__init__.py — add build_sandbox_client(settings) factory.
+[TOOL] Edit (twice) — type build_sandbox_client with Settings via TYPE_CHECKING import.
+[TOOL] Edit cli/main.py — add `agentctl sandbox verify --source --patch` (named fixtures or JSON file; prints structured result; exit code gates on verified).
+
+[CLAUDE]:
+verify_snapshot isn't on the SandboxClient Protocol ... I should add it to the Protocol so it's part of the stable contract.
+
+[TOOL] Edit interface.py — add verify_snapshot to the Protocol (Path import).
+[TOOL] Edit stub.py — add verify_snapshot raising NotImplementedInPhase.
+[TOOL] Edit cli/main.py — drop the type: ignore now that verify_snapshot is on the Protocol.
+[TOOL] Edit gateway/app.py — add config/build_sandbox_client imports (then reconsidered).
+
+[CLAUDE]:
+The smoke test test_readyz_ok_in_stub_mode asserts sandbox: True with the default (stub) client ... The cleanest honest design: the default sandbox stays the stub for in-process/test boot; the real Docker runner is used when the process actually serves. Let me revert the gateway import.
+
+[TOOL] Read config/__init__.py, tests/smoke/test_health.py.
+[TOOL] Edit gateway/app.py — revert to StubSandboxClient default (Phase-3 verification path is CLI + integration tests, not the gateway; Phase 6 wires the HTTP task path).
+[TOOL] Edit Makefile — install builds acp-sandbox image; add sandbox-build + sandbox-verify targets; SANDBOX_IMAGE/SOURCE/PATCH knobs; update .PHONY.
+[TOOL] Edit pyproject.toml — add `docker` pytest marker.
+
+[USER]:
+Continue from where you left off.
+
+[CLAUDE]:
+Now let me write the integration tests — the Phase-3 oracle. These require Docker + the image.
+
+[TOOL] Write tests/integration/test_sandbox_verification.py (good/bad/network/infinite/host-isolation x2/memory-binds/empty/infra-error; requires_sandbox skip guard; _tree_hash helper).
+[TOOL] Write tests/unit/test_sandbox_runner.py (pure-logic: payload parse, last-sentinel-wins spoof, missing-payload infra error, OOM from 137 and from -9, network classification, ordinary-failure not-a-kill, secret redaction at boundary, all isolation flags in docker args, fixture validity).
+[TOOL] Bash `pytest -q` -> 1 FAIL: test_fixtures_are_valid_envelopes (infinite_patch attr — name mismatch).
+
+[CLAUDE]:
+Only that naming mismatch. 91 pass (including the Docker integration tests — they ran!). Fix the fixture name list.
+
+[TOOL] Edit test_sandbox_runner.py — reference maker functions directly (fix name list).
+[TOOL] Bash `pytest -m docker -rs` -> 9 passed (Docker oracle tests ran, not skipped).
+[TOOL] Bash `ruff check` -> 3 F401 (unused shutil imports); `mypy` -> 2 errors (int()/float() on object payload values).
+
+[CLAUDE]:
+Fix the ruff unused imports and the mypy object-typed payload coercions.
+
+[TOOL] Bash `ruff check --fix` -> 2 fixed, 1 remaining (E501 in cli/main.py).
+[TOOL] Read + Edit docker_runner.py — int(str(...)) / float(str(...)) for payload coercion.
+[TOOL] Edit cli/main.py — wrap long typer.secho line.
+[TOOL] Bash `ruff check` -> All checks passed! `mypy` -> Success (42 files). `pytest` -> 92 passed.
+
+[CLAUDE]:
+92 passed ... ruff clean, mypy strict clean. Now let me exercise the CLI operator path end-to-end.
+
+[TOOL] Bash `agentctl sandbox verify` good + bad ->
+  good: verified=true exit=0
+  bad: verified=false, real pytest failure incl. ACP_KNOWN_BAD_ASSERTION_a1b2c3, exit=1
+
+[CLAUDE]:
+The operator CLI works ... Now the docs — DESIGN.md sandbox section and ADR-0003.
+
+[TOOL] Bash `ls docs/adr/` + grep DESIGN headings.
+[TOOL] Read DESIGN.md §6 (pending) + neighbors.
+[TOOL] Edit DESIGN.md §6 — full sandbox & egress section (what "verified" means, apply->build->test pipeline, which-mechanism-enforces-which table, why untrusted execution is safe, flagged cpu/pids as configured-not-proven).
+[TOOL] Read docs/adr/0002 for style.
+[TOOL] Write docs/adr/0003-sandbox-technology.md (Docker baseline; sandbox-as-contract; gVisor/Firecracker prod path; alternatives incl. reject model self-report; consequences + honest flags).
+[TOOL] Read + Edit docs/adr/README.md — mark 0003 Accepted (P3 -> P8).
+
+[CLAUDE]:
+Now update README bring-up section and .env.example for the new sandbox knobs.
+
+[TOOL] Bash grep sandbox in .env.example + README.
+[TOOL] Read + Edit .env.example — add ACP_SANDBOX_IMAGE/CPUS/MEMORY_MB/TMPFS_MB/WALL_CLOCK_SECONDS/PIDS.
+[TOOL] Read + Edit README.md — add Phase-3 sandboxed verification section (make sandbox-build / sandbox-verify, fixtures, integration oracle).
+[TOOL] Edit docker-compose.yml — honest sandbox-tier comment (per-job containers via acp-sandbox:latest; gateway task path wiring is Phase 4/6).
+
+[CLAUDE]:
+Now the Verifier role: final adversarial pass. Let me confirm ... (1) a patch that fails to apply returns applied=false, (2) a patch that breaks compilation returns built=false with real SyntaxError.
+
+[TOOL] Bash apply-fail + build-fail ->
+  escape: applied=False stage=apply ("patch path escapes work dir")
+  syntax: applied=True built=False stage=build (real SyntaxError text)
+
+[CLAUDE]:
+Both stage gates work with real error text. Let me add these as fixtures + tests for completeness.
+
+[TOOL] Edit fixtures.py — add unapplyable_patch + unbuildable_patch.
+[TOOL] Edit test_sandbox_verification.py — add stage-gate tests (apply fail / build fail w/ SyntaxError).
+[TOOL] Edit cli/main.py — add unapplyable/unbuildable to fixture map.
+[TOOL] Edit test_sandbox_runner.py — include new fixtures in validity test.
+[TOOL] Bash `ruff` -> clean; `mypy` -> Success (42 files); `pytest` -> 94 passed in 29.14s.
+
+[CLAUDE]:
+94 passed (73 baseline + 21 new), ruff clean, mypy --strict clean. Let me confirm the docker-marked count and the make target works end-to-end.
+
+[TOOL] Bash `pytest -m docker` -> 11 passed; `agentctl sandbox verify --patch network` -> killed_reason=network, verified=false.
+
+[CLAUDE]:
+11 Docker oracle tests pass; network egress denial confirmed through the operator CLI too. All work is complete and verified. Here is the Phase-3 report.
+
+## Phase 3 — Status Blocks
+<status_block> Task: Sandbox contract + VerificationResult (stable) — VERIFIED </status_block>
+<status_block> Task: Python reference runner + isolation + failure surfacing + kill handling — VERIFIED (cpu/pids flagged configured-not-proven) </status_block>
+<status_block> Task: Deterministic fixtures + agentctl sandbox verify — VERIFIED </status_block>
+
+Gates: 94 tests pass (73 baseline + 21 new: 11 Docker-integration oracle, 10 unit); ruff clean; mypy --strict clean. Built on ./.venv via `env -u VIRTUAL_ENV poetry run`.
+
+1. SandboxClient / VerificationResult contract:
+   Protocol: verify(request), verify_snapshot(request, snapshot_dir)->VerificationResult, healthy().
+   Request: task_id, workspace_id, base_commit, patch (owned JSON envelope), runner.
+   Result: verified, applied, built, tests_passed, exit_code, stage, stdout_tail, stderr_tail,
+   wall_clock_seconds, killed_reason. verified = applied ∧ built ∧ tests_passed ∧ killed_reason is None
+   — computed host-side, never a model claim. VerificationStage + KilledReason enums.
+
+2. Per-mechanism enforcement table:
+   network  --network none                                 PROVEN (real socket.connect fails closed)
+   memory   --memory + --memory-swap equal (swap off)      PROVEN (200MB passes @512, OOM @128)
+   disk     --read-only + --tmpfs /work:size=              PROVEN (writes only in tmpfs; host hash unchanged)
+   wall     host communicate(timeout=)->proc.kill()        PROVEN (infinite loop killed at deadline)
+   host/rootfs --read-only + RO bind + tmpfs copy          PROVEN (before/after tree hash identical)
+   user     --user 10001:10001 (+ image USER)              asserted-present in args + image
+   caps     --cap-drop ALL                                 asserted-present in args
+   no-new-privs --security-opt no-new-privileges           asserted-present in args
+   cpu      --cpus                                         CONFIGURED-BUT-NOT-PROVEN (no timing assertion)
+   pids     --pids-limit                                   CONFIGURED-BUT-NOT-PROVEN (no fork-bomb test)
+
+3. Real failure output: entrypoint runs pytest capture_output, emits sentinel-delimited JSON
+   (last-occurrence-wins vs spoofing); host _parse extracts real stdout/stderr, redacts secrets,
+   returns them. Bad-patch test asserts ACP_KNOWN_BAD_ASSERTION_a1b2c3 + test name present.
+
+4. Wall-clock kill + egress-deny proven: infinite_loop_patch -> killed_reason=deadline (5<=wall<30,
+   caller returns); network_patch does real connect under --network none -> fails closed, killed=network.
+
+5. Host isolation asserted: tree-hash host snapshot before/after runs that write files -> byte-identical;
+   patched test file never appears on host.
+
+6. Flagged configured-but-not-yet-proven: CPU (--cpus) and pids (--pids-limit) — applied + asserted
+   present in the invocation, but not timing/fork-bomb-proven (would be flaky). Documented in DESIGN.md §6
+   + ADR-0003 so not mistaken for verified.
+
+Stopping here — Phase 4 (agent loop) not started, per the Phase-3 <stop>.
+
+--------------------------------------------------------------------------------
+
+[USER]:
+same this conversation like @claude_chat/phase_0.txt in @claude_chat/phase_3.txt
+
+[CLAUDE]:
+(Wrote this raw turn-by-turn transcript to claude_chat/phase_3.txt.)
+
+=== End of conversation ===

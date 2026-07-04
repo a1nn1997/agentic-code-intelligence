@@ -1,0 +1,179 @@
+=== Claude Code Conversation — ACP Phase 2 ===
+Generated on: 2026-07-03
+Model: Claude Opus 4.8 (1M context)
+Format: raw turn-by-turn. [TOOL] lines summarize tool calls/results; all USER
+and CLAUDE prose is verbatim.
+--------------------------------------------------------------------------------
+
+[USER]:
+Read @implementation_plan/execution_plan.md for full project context.
+Phases 0 and 1 are complete and green-lit: compose boots with the API-only boundary confirmed (gateway sole host port, sandbox internal); structural Python+TS index with cross-file resolution, incremental==full-rebuild equivalence, and cross-process determinism all verified; 55 tests green, ruff + mypy --strict clean.
+
+@implementation_plan/phase_agnostic_system_prompt.xml is your operating contract — follow it for all work.
+@implementation_plan/phase2_prompt.xml is your current task (Phase 2 only).
+
+Execute Phase 2 now:
+- Work the <work_cycle> from the operating contract; act the specialist roles sequentially, gate each unit behind its Verifier.
+- Emit a <status_block> per unit of work.
+- Verification evidence MUST match the exact oracle clause — no proxies. In particular: the "over-budget retrieval charges nothing" clause requires a test that asserts the ledger row count / balance is UNCHANGED after the refused call, not merely that an exception was raised.
+- Build against the project's own in-project .venv only. Note: plain `poetry run` may bind to an inherited venv on this machine — run every command with `env -u VIRTUAL_ENV` (as in Phase 1) so it uses ./.venv. Fold a durable fix into the Makefile if clean.
+- Small, incremental commit-sized units on a phase-2 branch (git still deferred; keep unit boundaries clean).
+- Secret redaction must happen INSIDE the retrieval layer, before content crosses the module boundary — not downstream. Test against the Phase-1 planted secrets (sample_repo/.env and config.py).
+- Reuse the Phase-1 sample repo and index; do not re-plant fixtures.
+- Stop at Phase 2's <stop>. Do NOT start Phase 3 (sandbox).
+- End by reporting: the retrieval primitive signatures as implemented, the exact token-accounting formula per primitive, the ledger reserve/commit interaction for a retrieval, the secret-redaction approach (patterns, where applied, how logged), and how determinism is guaranteed across replay.
+Carry forward two documented Phase-1 debts into DESIGN.md this phase (do not silently drop): (a) name+language-scoped resolution limitation, restated in the retrieval section with its failure mode; (b) index-as-single-JSON scaling seam.
+
+[TOOL] Read execution_plan.md, phase_agnostic_system_prompt.xml, phase2_prompt.xml.
+
+[CLAUDE]:
+I'll start by reviewing the current state of the project — the Phase 1 deliverables, the existing module boundaries, the schema, and the ledger — before touching anything.
+
+[TOOL] Bash `ls -la && git branch ...` -> DENIED (git in compound command).
+
+[CLAUDE]:
+Global instructions forbid me from running git. I'll explore with dedicated tools instead.
+
+[TOOL] Bash find project tree (depth 2) -> src/acp/{index,retrieval,workspace,db,...}, sample_repo, docs/adr, tests.
+[TOOL] Bash list src/tests/sample_repo/docs files.
+[TOOL] Read index/model.py (FileIndex partitions, canonical serialize, cross-file queries, determinism).
+[TOOL] Read retrieval/interface.py (RetrievalService Protocol: 6 primitives, SnapshotRef, RetrievalResult w/ byte_count+token_cost).
+[TOOL] Read retrieval/stub.py (all 6 raise NotImplementedInPhase).
+[TOOL] Read db/models.py (LedgerEntry rows).
+[TOOL] Read db/repositories.py (LedgerRepo: append + spent_tokens (COMMIT only) + reserved_tokens (RESERVE-RELEASE)).
+[TOOL] Read common/types.py (LedgerEntryKind RESERVE/COMMIT/RELEASE).
+[TOOL] Read common/errors.py (BudgetExceeded exists, http 402).
+[TOOL] Read workspace/service.py (per-user index load/build; head_commit = snapshot id).
+[TOOL] Read index/builder.py, db/connection.py (WAL + BEGIN IMMEDIATE), index/languages.py (tree-sitter extract).
+[TOOL] Read cli/main.py (agentctl tree; workspace/index groups).
+[TOOL] Read workspace/interface.py, config/settings.py.
+[TOOL] Read sample_repo/.env (planted: sk_live_…, hunter2…, eyJfake.PLANTED…).
+[TOOL] Read sample_repo/backend/app/config.py (planted: sk-live-…, sk_test_…; DATABASE_URL benign).
+[TOOL] Read db/schema.sql (budget_ledger reserve/commit/release, append-only trigger).
+[TOOL] Read tests/conftest.py (sample_repo mutable-copy fixture, db fixture, workspace_root fixture).
+[TOOL] Read tests/integration/test_workspace_index.py (Phase-1 cross-file resolution: serialize_user -> 4 files).
+[TOOL] Read pyproject.toml (pytest markers unit/smoke/integration), retrieval/__init__.py, common/logging.py.
+[TOOL] Bash grep formatUser/serialize_user in sample_repo -> formatUser defined in models/user.ts, 4 caller files.
+[TOOL] Read docs/adr/0001-retrieval-model.md (Status: Proposed), DESIGN.md headings + §2/§5/§7.
+[TOOL] Bash `env -u VIRTUAL_ENV poetry run python -c "import sys; print(sys.prefix)"` + pytest -> ./.venv, 55 tests green.
+
+[CLAUDE]:
+I now have a thorough understanding. Plan (work cycle, sequential units, each gated by its Verifier):
+- Unit 1 — Token accounting + secret redaction core (pure, testable).
+- Unit 2 — Ledger reserve/commit + RetrievalService over the Phase-1 index.
+- Unit 3 — agentctl retrieve wiring.
+- Unit 4 — Tests (unit + integration, one per oracle clause).
+- Unit 5 — Docs (DESIGN.md, ADR-0001 -> Accepted, Phase-1 debts) + Makefile venv fix.
+
+Design decisions: token_cost = PER_CALL_OVERHEAD + ceil(bytes/4) on post-redaction returned bytes (monotonic => span < file). Reserve/commit: compute result+cost first, pre-op check, refuse (raise BudgetExceeded, write nothing) if over budget, else RESERVE->COMMIT->RELEASE.
+
+[TOOL] Write retrieval/accounting.py (byte_count, token_cost; fixed BYTES_PER_TOKEN=4, PER_CALL_OVERHEAD=1).
+[TOOL] Write retrieval/redaction.py (RedactionEvent/Result; provider-key + JWT + name-based rules; DATABASE_URL allow-list; «redacted:reason» marker; idempotent).
+
+[CLAUDE]:
+Now let me act as Verifier on Unit 1 with a quick interactive check against the actual planted secrets before building the service on top.
+
+[TOOL] Bash interactive: redact .env + config.py -> all 5 planted secret VALUES gone; DATABASE_URL kept; token_cost 11 < 101. "ALL PLANTED SECRETS REDACTED, NO LEAK".
+
+[CLAUDE]:
+Unit 1 VERIFIED. Now Unit 2 — the RetrievalService with reserve/commit ledger interaction.
+
+[TOOL] Write retrieval/service.py (RetrievalServiceImpl: 6 primitives + read_file; _charge reserve->commit->release w/ pre-op refuse; _meter_content redact+cost+charge+log; snapshot-pinned index load; path-containment checks).
+[TOOL] Edit retrieval/__init__.py — export RetrievalServiceImpl.
+
+[CLAUDE]:
+Now let me quickly Verifier-check the service end-to-end interactively before writing formal tests.
+
+[TOOL] Bash interactive: build workspace + index; references(serialize_user) -> 4 files; span tokens 115 < file 272; config secret not leaked, marker present; committed 581, reserved 0.
+[TOOL] Bash interactive (critical clause): tiny budget=5 -> read_file raises BudgetExceeded; ledger rows 0->0 UNCHANGED; spent 0->0 UNCHANGED.
+
+[CLAUDE]:
+Unit 2 VERIFIED including the critical "charges nothing" clause (row count AND balance unchanged). Now Unit 3 — wire into agentctl retrieve.
+
+[TOOL] Edit cli/main.py — import RetrievalServiceImpl + SnapshotRef/SpanRef.
+[TOOL] Edit cli/main.py — add `retrieve` Typer group: search / refs / read; _retrieval_service builder (ownership gate); print token/byte cost per call.
+
+[CLAUDE]:
+Let me Verifier-check the CLI wiring against a real seeded workspace.
+
+[TOOL] Bash: agentctl workspace create + retrieve refs serialize_user (def + 7 refs, [cost 78]); retrieve read config.py 10-15 (SECRET_KEY/STRIPE_KEY redacted, DATABASE_URL kept, [cost 63/247]); retrieve search serialize (2 hits).
+
+[CLAUDE]:
+Unit 3 VERIFIED. Now Unit 4 — formal tests matching each oracle clause exactly.
+
+[TOOL] Write tests/unit/test_retrieval_redaction.py (6 tests: monotonic cost, deterministic cost, .env + config.py planted-secret redaction, idempotent, events report count-not-value).
+[TOOL] Write tests/integration/test_retrieval_service.py (12 tests, one per oracle clause incl. over-budget row-count+balance unchanged, partial-spend-then-refuse, redaction+log event, cross-file resolution, every-primitive-meters).
+
+[TOOL] Bash `pytest -q` -> 1 FAILED: test_references_reproduce_phase1 asserted 'frontend/src/models/user.ts' in formatUser refs.
+
+[CLAUDE]:
+Verifier caught a real oracle fact: formatUser is *defined* in models/user.ts, so the definition occurrence isn't a reference there — its references are the 4 caller files. That's correct index behavior. My test assertion was wrong.
+
+[TOOL] Edit test_retrieval_service.py — assert formatUser refs == the 4 caller files; assert definition resolves to models/user.ts.
+[TOOL] Bash `pytest -q` -> all green.
+[TOOL] Bash count + ruff -> 2 E501 long lines in cli/main.py (cost-line reaching into svc._budget_tokens - svc.remaining_tokens()).
+
+[CLAUDE]:
+Two long lines. Let me add a small `spent()` helper to the service (cleaner than reaching into privates twice) and fix the CLI.
+
+[TOOL] Edit retrieval/service.py — add spent_tokens() helper.
+[TOOL] Bash python one-liner — replace CLI cost lines with svc.spent_tokens() (x2).
+[SYSTEM] cli/main.py modified by linter — intentional, kept.
+[TOOL] Bash `ruff check` -> All checks passed! ; `mypy` -> Success: no issues found in 40 source files.
+[TOOL] Bash `pytest` -> 73 passed in 10.13s (was 55; +18 Phase-2).
+
+[CLAUDE]:
+73 passed. Now the durable Makefile venv fix and the docs.
+
+[TOOL] Edit Makefile — RUN := env -u VIRTUAL_ENV poetry run (comment: strip inherited venv so poetry binds ./.venv).
+[TOOL] Bash `make test-unit` -> delegates through env -u VIRTUAL_ENV; 49 passed.
+
+[CLAUDE]:
+`make` now works and binds to ./.venv. Now the docs.
+
+[TOOL] Edit DESIGN.md §2 title -> "Phase 1: index -> Phase 2: budgeted primitives".
+[TOOL] Edit DESIGN.md §2 — replace Phase-2 placeholder with: primitive table, token-accounting formula, reserve/commit interaction, determinism->replay, secret-redaction pointer, and BOTH carried-forward Phase-1 debts (a) name+lang-scoped resolution w/ failure mode, (b) index-as-single-JSON scaling seam w/ fix behind same interface.
+[TOOL] Edit DESIGN.md §5 — secret redaction is the first layer, lands now (patterns, structure-preserving, idempotent, allow-list, count-not-value logging, structural_grep ignores docstring injection; sandbox egress backstop later).
+[TOOL] Edit DESIGN.md §7 — retrieval bytes/tokens as a first-class metered dimension; RESERVE->COMMIT->RELEASE scoped; span<file rewards symbol-scoped navigation.
+[TOOL] Edit docs/adr/0001-retrieval-model.md — Status Proposed -> Accepted; add "Accounting model (finalized Phase 2)" section (formula, span<file, deterministic accounting, reserve/commit refuse, redaction choke point, two debts).
+
+[CLAUDE]:
+Now a final full verification pass — tests, lint, mypy, and confirm the `retrieve` command appears in help.
+
+[TOOL] Bash: pytest 73 passed; ruff clean; mypy 40 files clean; `agentctl retrieve --help` -> search/refs/read commands.
+[TOOL] Bash: pytest on the two Phase-2 files -> 18 passed (12 integration + 6 unit).
+
+[CLAUDE]:
+(Emitted 4 status blocks — Units 1–5 all VERIFIED — then the final report.)
+
+## Phase 2 — Final Report
+
+Stopped at Phase 2's <stop>. Phase 3 (sandbox) not started. 73 tests pass (+18), ruff clean, mypy --strict clean, built against ./.venv.
+
+1. Retrieval primitive signatures — RetrievalServiceImpl(db, workspace_root, user_id, *, scope, budget_tokens):
+   search_symbols(snap, query, limit=20)->list[Symbol]; definition(snap, name)->Symbol|None;
+   references(snap, name)->list[SpanRef]; read_span(snap, span)->RetrievalResult (primary/cheapest);
+   read_file(snap, path)->RetrievalResult (possible, costlier); list_dir(snap, path)->RetrievalResult;
+   structural_grep(snap, pattern, limit=50)->list[SpanRef]. RetrievalResult = content (post-redaction) + byte_count + token_cost. Every query pinned to SnapshotRef(workspace_id, commit); drifted head refused.
+
+2. Token-accounting formula — token_cost = PER_CALL_OVERHEAD(1) + ceil(byte_count(returned_content)/BYTES_PER_TOKEN(4)) on post-redaction bytes. Identical constants across primitives => cost differs only by returned bytes => span < file provably. Metadata primitives meter the canonical sorted text of returned symbols/spans.
+
+3. Ledger reserve/commit — one choke point _charge(tokens), one write txn: (1) pre-op check, if tokens > remaining (ceiling - committed - net_reserved) raise BudgetExceeded BEFORE any ledger write (refused call: row count AND balance unchanged); (2) RESERVE -> (3) COMMIT (what spent_tokens counts) -> (4) RELEASE (net reserved back to 0). After a served call, committed spend rose by exactly the cost, reserved is 0.
+
+4. Secret redaction — redaction.py, applied inside _meter_content on every content-returning primitive, before content leaves the module. Patterns: provider keys (sk_live_/sk_test_/sk-live-), JWT tokens, name-based secret/password/token/api_key/signing_key assignments; DATABASE_URL allow-listed. Only the VALUE -> «redacted:reason» (structure preserved, idempotent). Logged as retrieval.secret_redacted with reason+count, never the value; noted on the ledger entry. Tested against all 5 Phase-1 planted secrets.
+
+5. Determinism across replay — result is a pure function of (immutable snapshot, query), snapshot pinned via SnapshotRef and index loaded once per (workspace, commit); cost is a pure function of returned post-redaction bytes; redaction idempotent. => same query on same snapshot -> byte-identical content AND identical accounting -> Phase 4 replays with no double-charge/divergence.
+
+Phase-1 debts carried into DESIGN.md §2 + ADR-0001: (a) name+language-scoped resolution (two same-named same-language symbols collapse into one reference set; sample repo unaffected, targets unique); (b) index-as-single-JSON scaling seam (fix: per-file partition store + prebuilt maps behind the unchanged Index/RetrievalService interfaces).
+
+Module interfaces for review before Phase 3: RetrievalService Protocol unchanged; RetrievalServiceImpl reads only through the user-scoped WorkspaceServiceImpl (isolation inherited); RESERVE/COMMIT/RELEASE uses the existing schema unchanged — no new tables, no consumer-reachable path introduced.
+
+--------------------------------------------------------------------------------
+
+[USER]:
+same conversation in @claude_chat/phase_2.txt as done here @claude_chat/phase_0.txt
+
+[CLAUDE]:
+(Wrote this raw turn-by-turn transcript to claude_chat/phase_2.txt, matching the phase_0.txt format.)
+
+=== End of conversation ===

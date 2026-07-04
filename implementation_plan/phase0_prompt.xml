@@ -1,0 +1,17 @@
+<phase_task>
+  <phase>0</phase>
+  <goal>Skeleton & contracts only. Stub all module interfaces; implement no index/retrieval/sandbox/agent logic.</goal>
+  <deliverables>
+    <d>Module packages with Protocol/ABC interfaces + stubs: gateway, retrieval, orchestrator, model_gateway, workspace, sandbox_client, config, db, common</d>
+    <d>pydantic-settings config, env-driven, .env.example (SANDBOX_RUNNER, MODEL_BACKEND, budget defaults)</d>
+    <d>SQLite WAL schema: users, api_keys(hashed), workspaces, tasks, journal(append-only, unique task_id+step_index), budget_ledger, artifacts; typed data-access layer, no raw SQL in modules</d>
+    <d>FastAPI /healthz + /readyz only; internal modules expose no HTTP</d>
+    <d>Structured JSON logs (task_id/step/module context) + /metrics stub</d>
+    <d>agentctl CLI skeleton (Typer); Makefile thin interface, make help auto-generated + default, all .PHONY; lifecycle/setup/dev/test targets delegate one-line, demo targets stubbed</d>
+    <d>docker-compose.yml (control plane + placeholder sandbox host, private net, only gateway publishes a port); Poetry Dockerfile (lockfile hermetic install)</d>
+    <d>Tests: unit (config, data-access) + smoke (/healthz, /readyz = 200)</d>
+  </deliverables>
+  <oracle>make up boots keyless; /healthz + /readyz = 200; make test green; no internal module publishes a port; api_keys stored hashed only.</oracle>
+  <docs>DESIGN.md skeleton + data-flow diagram draft; README bring-up section.</docs>
+  <stop>Do not start Phase 1. Report module interfaces + schema + agentctl command tree for review.</stop>
+</phase_task>

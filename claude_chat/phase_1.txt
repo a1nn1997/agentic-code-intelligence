@@ -1,0 +1,208 @@
+=== Claude Code Conversation — ACP Phase 1 ===
+Generated on: 2026-07-03
+Model: Claude Opus 4.8 (1M context)
+Format: raw turn-by-turn. [TOOL] lines summarize tool calls/results; all USER
+and CLAUDE prose is verbatim.
+--------------------------------------------------------------------------------
+
+[USER]:
+Read @implementation_plan/execution_plan.md for full project context.
+Phase 0 is complete and green-lit (compose boots, boundary confirmed, tests pass).
+
+@implementation_plan/phase_agnostic_system_prompt.xml is your operating contract — follow it for all work.
+@implementation_plan/phase1_prompt.xml is your current task (Phase 1 only).
+
+Execute Phase 1 now:
+- Work the <work_cycle> from the operating contract; act the specialist roles sequentially, gate each unit behind its Verifier.
+- Emit a <status_block> per unit of work.
+- Verification evidence MUST match the exact oracle clause — no proxies (e.g. a full-rebuild equivalence claim needs the equivalence test actually run, not asserted).
+- Small, incremental commit-sized units on a phase-1 branch (git still deferred; keep the unit boundaries clean).
+- Build against the project's Poetry venv only (`poetry run` / `make test`), not any inherited venv.
+- Stop at Phase 1's <stop>. Do NOT start Phase 2.
+- End by reporting: the index data model, the WorkspaceService interface as implemented, the incremental re-index strategy + equivalence invariant, and the sample-repo layout with each planted item's location and purpose.
+
+[TOOL] Read execution_plan.md, phase_agnostic_system_prompt.xml, phase1_prompt.xml.
+
+[CLAUDE]:
+I'll start by understanding the current state of the repo (Phase 0's output) before planning Phase 1 execution.
+
+[TOOL] Bash `ls -la` + file tree -> Phase-0 layout: src/acp/{gateway,retrieval,orchestrator,model_gateway,workspace,sandbox_client,config,db,common,cli}, tests/{unit,smoke}, DESIGN.md, docs/adr/0000, Makefile, Dockerfile, compose, pyproject, poetry.lock.
+[TOOL] Read workspace/interface.py, workspace/stub.py, db/schema.sql, db/models.py.
+[TOOL] Read db/repositories.py, db/connection.py, config/settings.py, cli/main.py.
+[TOOL] Read common/types.py, common/errors.py, retrieval/interface.py, pyproject.toml, Makefile, tests/conftest.py.
+[TOOL] Read db/__init__.py, tests/unit/test_data_access.py.
+[TOOL] Bash `poetry env info -p` + tree-sitter import check -> venv points at an UNRELATED project's .venv; tree_sitter not installed.
+
+[CLAUDE]:
+The Poetry env is resolving to an inherited venv from another project — exactly what the user warned about. Let me diagnose before doing anything.
+
+[TOOL] Bash diagnose -> VIRTUAL_ENV set to inventory_smart/.../backend/.venv; `env VIRTUAL_ENV= poetry env info` -> Path: NA (no project venv yet); virtualenvs.in-project=true; no local .venv.
+
+[CLAUDE]:
+I now have a full picture of the Phase 0 foundation. Two environment facts matter before I write any code:
+1. Inherited venv confirmed — VIRTUAL_ENV points at an unrelated project's .venv, and this project has no venv yet. I must build the project's own in-project venv and run every command with VIRTUAL_ENV unset.
+2. tree-sitter is not installed — Phase 1's structural index requires py-tree-sitter + Python/TS grammars. Establishing them needs poetry add (network). Intrinsic to Phase 1; proceeding, flagging it since it's a network action.
+
+[TOOL] ToolSearch -> load TodoWrite.
+[TOOL] TodoWrite — 9 units (Unit 0 env … Unit 7 docs + Final).
+
+[CLAUDE]:
+## Unit 0 — Project venv + tree-sitter deps
+
+[TOOL] Edit pyproject.toml — add tree-sitter, tree-sitter-python, tree-sitter-typescript (>=0.23,<0.25).
+[TOOL] Bash `env -u VIRTUAL_ENV poetry lock` -> created in-project .venv, lock written.
+[TOOL] Bash `poetry install` -> installed tree-sitter 0.24.0, tree-sitter-python 0.23.6, tree-sitter-typescript 0.23.2.
+[TOOL] Bash grammar load check -> python/ts/tsx all parse OK (only a cosmetic __version__ attr error).
+[TOOL] Bash `env -u VIRTUAL_ENV make test` -> 35 passed (Phase-0 baseline green in project venv).
+[TOOL] Bash `poetry run python -c sys.prefix` (ambient VIRTUAL_ENV) -> WRONG inherited venv; confirms env -u discipline needed.
+
+[CLAUDE]:
+Confirmed the trap: plain `poetry run` binds to the wrong inherited venv; `env -u VIRTUAL_ENV` binds to the correct project .venv. I'll use env -u VIRTUAL_ENV for every command this session and note it in the report. Leaving the Makefile unmodified (Docker path unaffected).
+
+<status_block> phase 1 / Unit 0 — venv + tree-sitter deps / VERIFIED / next: sample repo </status_block>
+
+[CLAUDE]:
+## Unit 1 — Synthetic Python+TS sample repo
+
+[TOOL] Write sample_repo/README.md (layout + planted-item map).
+[TOOL] Write sample_repo/backend/app/config.py (PLANTED in-code fake secrets SECRET_KEY/STRIPE_KEY).
+[TOOL] Write backend/app/users/models.py (User dataclass, UserId type alias).
+[TOOL] Write backend/app/users/service.py (serialize_user RENAME TARGET + get_user; PLANTED injection in docstring).
+[TOOL] Write backend/app/users/repository.py, api.py (/users handlers, calls serialize_user), reports/export.py (2nd caller), tests/test_users.py (call sites).
+[TOOL] Bash create app/ app/users/ app/reports/ __init__.py files.
+[TOOL] Write frontend/src/models/user.ts (interface User, UserId, formatUser TS x-file symbol), api/usersClient.ts, components/userList.ts, pages/usersPage.ts, tests/users.test.ts.
+[TOOL] Write sample_repo/.env (PLANTED fake .env secrets).
+[TOOL] Bash `find sample_repo` -> 17 files (10 Python indexed, 5 TS).
+
+<status_block> phase 1 / Unit 1 — sample repo fixture / VERIFIED (behavior via Unit 2) / next: index model+parsers </status_block>
+
+[CLAUDE]:
+## Unit 2 — Structural index model + parsers
+
+[TOOL] TodoWrite — Unit 0,1 completed; Unit 2 in_progress.
+[TOOL] Write src/acp/index/model.py (Symbol/Reference/ImportEdge/FileIndex; per-file partitions; canonical sort keys).
+[TOOL] Edit model.py — add Index class (put/drop file, definitions, references_of, reference_files, import_edges, resolved_import_edges, serialize (canonical JSON), digest, stats).
+[TOOL] Write src/acp/index/languages.py (tree-sitter loading; walk; Python extraction: functions/classes/methods/module vars, refs excluding def-name, imports, ref_kind).
+[TOOL] Edit languages.py — add TypeScript extraction (function/class/method/interface/type/enum/arrow-const, refs, import/export source) + public extract() dispatch.
+[TOOL] Write src/acp/index/builder.py (IndexBuilder: discover, index_file w/ parse accounting, build full, reindex_file incremental; Python + TS import resolution — dotted suffix-match, relative dots, TS extension/index fallbacks).
+[TOOL] Write src/acp/index/__init__.py (exports).
+[TOOL] Bash smoke-test build on sample_repo -> STATS files 15, symbols 32, refs 213, imports 18, resolved_edges 17; serialize_user->4 py files; formatUser->4 ts files; 17 importer->imported edges.
+
+[CLAUDE]:
+All resolution works: serialize_user (Python) and formatUser (TS) each resolve to 4 cross-file call sites; 17 importer→imported edges resolve across both languages.
+
+[TOOL] Edit config/settings.py — add workspace_root setting.
+[TOOL] Edit db/repositories.py — add WorkspacesRepo.set_head (user-scoped).
+[TOOL] Edit index/model.py — add Index.from_serialized (round-trip).
+
+[CLAUDE]:
+## Unit 3 — WorkspaceService
+
+[TOOL] Write src/acp/workspace/service.py (WorkspaceServiceImpl: create_workspace ingest dir/.zip/.tar.gz, get/list, open_worktree->NotImplementedInPhase; build_index/load_index/update_file; repo_path; path derivation from (user_id,workspace_id); _safe_join + _user_root containment; zip-slip/tar guard; _snapshot_id).
+[TOOL] Read workspace/__init__.py; Edit — export WorkspaceServiceImpl, WorkspaceRef, WorktreeHandle.
+[TOOL] Bash smoke-test service -> isinstance Protocol True; created workspace + head; index 15 files/17 edges; user_b cannot get/index user_a workspace (NotFound); incremental add file resolves.
+
+[CLAUDE]:
+All service behaviors work. Now the formal test suites.
+
+[TOOL] Edit tests/conftest.py — add SAMPLE_REPO_SRC + sample_repo (mutable tmp copy) + workspace_root fixtures.
+[TOOL] Write tests/unit/test_index.py (Py + TS resolve-all-call-sites; both langs indexed; import graph both langs; determinism; serialize round-trip; incremental==full rebuild byte-for-byte + files_parsed==1; file-deletion incremental==rebuild; docstring injection NOT a reference; secret values not in index but SECRET_KEY name is).
+[TOOL] Edit test_index.py — remove unused helper.
+[TOOL] Write tests/integration/__init__.py.
+[TOOL] Write tests/integration/test_workspace_index.py (Protocol; ingest+build; cross-user isolation get/build/repo_path/update_file + list; incremental via service==full; head changes on edit; open_worktree deferred).
+[TOOL] Bash pytest new tests -> 16 passed.
+
+[CLAUDE]:
+Both index and workspace work end-to-end. Acting as Verifier, let me add an adversarial path-traversal check, then run the full quality gate.
+
+[TOOL] Edit test_workspace_index.py — import IsolationViolation; add test_update_file_rejects_path_traversal (../../../../tmp/evil.py -> IsolationViolation).
+[TOOL] Bash ruff + mypy -> mypy clean (37 files); ruff 4x UP033 (lru_cache->cache).
+[TOOL] Bash `ruff check --fix` -> 6 fixed, All checks passed! (linter rewrote languages.py/builder.py: functools.cache, import order).
+[TOOL] Bash `env -u VIRTUAL_ENV make test` -> 52 passed.
+
+<status_block> phase 1 / Units 2–6 — index+workspace+incremental+determinism / VERIFIED / adversarial: injection-not-a-ref, secrets-not-in-index, traversal rejected, zip-slip guarded, deletion==rebuild / next: agentctl wiring </status_block>
+
+[CLAUDE]:
+## Unit 6 — Wire index into agentctl
+
+[TOOL] Edit cli/main.py — import Path, IndexBuilder, WorkspaceServiceImpl.
+[TOOL] Edit cli/main.py — add workspace sub-app (create/list) + index sub-app (build/stats/refs), operator-only.
+[TOOL] Edit cli/main.py — clean workspace_create (ensure user FK exists, init_db).
+[TOOL] Bash `agentctl index build --path sample_repo` -> stats + digest; `index refs serialize_user --path sample_repo` -> def + call sites.
+[TOOL] Bash workspace create + list + index stats against scratch DB -> all work.
+[TOOL] Bash ruff + mypy -> mypy clean; ruff 3 errors: B008 on `Path | None = typer.Option(None)` (2x) + E501 (1x).
+[TOOL] Bash isolate B008 -> only the `Path | None` options flag; serve's `str | None` doesn't (ruff Path quirk).
+
+[CLAUDE]:
+Confirmed: only the Path | None annotations flag (serve's str | None doesn't) — a ruff quirk with the Path type. I'll match the repo's existing idiom (serve uses str), accept str | None, and convert to Path inside.
+
+[TOOL] Edit cli/main.py — split long Typer() lines (E501); change index_build/index_refs path option to str | None, convert Path(path) inside.
+[TOOL] Edit tests/unit/test_cli.py — add ACP_WORKSPACE_ROOT to cli_env; add SAMPLE_REPO_SRC + 3 CLI tests (index build ad-hoc, index refs cross-file, workspace create + index stats).
+[TOOL] Bash ruff + make test -> 3 failed: ModuleNotFoundError 'tests' (local `from tests.conftest import`).
+[TOOL] Edit test_cli.py — add module-level SAMPLE_REPO_SRC; remove 3 local imports.
+[TOOL] Bash ruff clean; `make test` -> 55 passed.
+
+[CLAUDE]:
+55 passed, lint + mypy clean. Units 2–6 verified.
+
+[TOOL] TodoWrite — Units 2–6 completed; Unit 7 in_progress.
+
+[CLAUDE]:
+## Unit 7 — Docs
+
+[TOOL] Read DESIGN.md; docs/adr/README.md.
+[TOOL] Edit DESIGN.md §2 — retrieval "why it beats naive RAG" (structural index vs embeddings; chunk-and-stuff failure modes; what we built; incremental-equivalence invariant).
+[TOOL] Edit DESIGN.md §4 — isolation extended to filesystem (per-user paths from (user_id,workspace_id); not-addressable + not-escapable; adversarial verification).
+[TOOL] Edit DESIGN.md — add appendices: Phase-1 index data model; sample repo & planted items table.
+[TOOL] Write docs/adr/0001-retrieval-model.md (structural index; alternatives LSIF/ctags/LSP/embeddings-only and why rejected; consequences + name/lang-scoped limitation; finalized P2).
+[TOOL] Write docs/adr/0002-isolation-mechanism.md (scoped accessor + per-user workspaces; alternatives; consequences; worktrees finalize P4).
+[TOOL] Read + Edit docs/adr/README.md — link 0001/0002, statuses "Proposed".
+[TOOL] Read README.md; Edit — status line -> Phase 1; add Phase-1 index/workspace command examples.
+[TOOL] Read .gitignore; Edit — add `!sample_repo/.env` exception (fixture fake secret is a redaction test target; .env rule would otherwise ignore it).
+
+[CLAUDE]:
+## Final verification
+
+[TOOL] Bash ruff + mypy + cross-process determinism + make test ->
+  ruff: All checks passed! ; mypy: Success (37 files);
+  cross-process digest run1==run2 (DETERMINISTIC ACROSS PROCESSES: yes);
+  make test: 55 passed.
+[TOOL] Bash `make test-integration` -> 7 passed, 48 deselected; `make test-unit` -> 43 passed, 12 deselected.
+[TOOL] TodoWrite — all 9 items completed.
+
+[CLAUDE]:
+# Phase 1 — Complete. Stopped at <stop> (Phase 2 not started).
+
+Final gate: make test -> 55 passed (43 unit, 7 integration, 5 smoke); ruff clean; mypy --strict clean (37 files); index digest byte-identical across separate processes. All in the project-local .venv (env -u VIRTUAL_ENV), never the inherited venv.
+
+Oracle evidence (each clause run, not asserted):
+- Symbol -> all call sites, both languages: serialize_user->4 Python files; formatUser->4 TS files.
+- Incremental == full rebuild byte-for-byte; only affected file re-parsed (inc.files_parsed==1 vs 15).
+- Import graph importer->imported, Py and TS (17 resolved edges).
+- Deterministic serialization: in-process + cross-process digest match.
+- Cross-user isolation: user_b cannot get/index/reach-path/edit/see user_a's workspace.
+- No model/network: pure tree-sitter + filesystem.
+Adversarial extras survived: docstring injection not a reference; secret values never in serialized index; path-traversal + zip-slip rejected; file-deletion incremental == rebuild.
+
+1. Index data model (src/acp/index/model.py): partitioned by file; Symbol/Reference/ImportEdge/FileIndex; Index with cross-file queries + canonical byte-stable serialize/digest/from_serialized. Stored as canonical JSON at <workspace>/index.json; tree snapshot id in workspaces.head_commit.
+2. WorkspaceService (WorkspaceServiceImpl): create_workspace (dir/.zip/.tar.gz, guarded), get_workspace (ownership gate, NotFound not-owned≡not-exists), list_workspaces, open_worktree->NotImplementedInPhase (P4); internal index surface build_index/load_index/update_file/repo_path; isolation by construction — paths from (user_id,workspace_id), no bare-workspace_id primitive.
+3. Incremental strategy + invariant: re-parse exactly one file, swap its partition (files_parsed proves 1 vs N); result byte-for-byte identical to full rebuild because a partition is a pure fn of one file's bytes + edit-invariant path-set, and serialize() is pure canonical.
+4. Sample-repo layout + planted items: sample_repo/ Python+TS /users service; serialize_user (Py)/formatUser (TS) x-file rename targets; injection in service.py docstring; fake secrets in .env + config.py.
+
+Interfaces/schema for review: new module acp.index; WorkspaceServiceImpl; additive WorkspacesRepo.set_head; Settings.workspace_root. retrieval interface untouched, ready for Phase 2.
+
+Two notes for a decision before Phase 2:
+- Dependencies added (tree-sitter + python + typescript grammars) via poetry add — a network action, intrinsic to Phase 1; poetry.lock updated.
+- Reference resolution is name+language-scoped (no type inference) — documented in ADR-0001; fine for the unique sample-repo symbols and Phase-5 rename.
+
+Stopped per Phase-1 <stop> — Phase 2 (budgeted retrieval API) not begun.
+
+--------------------------------------------------------------------------------
+
+[USER]:
+save this conversation like @claude_chat/phase_0.txt in @claude_chat/phase_1.txt
+
+[CLAUDE]:
+(Wrote this raw turn-by-turn transcript to claude_chat/phase_1.txt.)
+
+=== End of conversation ===

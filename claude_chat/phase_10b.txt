@@ -1,0 +1,144 @@
+=== Claude Code Conversation — ACP Phase 10b ===
+Generated on: 2026-07-04
+Model: Claude Opus 4.8 (1M context)
+Format: raw turn-by-turn. [TOOL] lines summarize tool calls/results; all USER
+and CLAUDE prose is verbatim.
+Scope: Phase 10b is a TIGHT, TIME-BOXED correctness pass — ONLY four items:
+B-3 (retrieval budget TOCTOU), B-1 (Claude SDK error mapping), B-2 (stop_reason
+inspection), and pytest-cov. NOT the admin console, full test-taxonomy, broad
+B-refactor, or the DESIGN FDE rewrite — those remain deferred.
+--------------------------------------------------------------------------------
+
+[USER]:
+Read @implementation_plan/execution_plan.md for full project context.
+Phases 0–9 + 10a complete and green-lit: full platform, every hard requirement proven by mechanism, real-Docker eval path (make eval-docker 5/5, TASK-03 honestly STUB-ONLY), wall-clock enforced, metering populated, commit_worktree wired into apply, rate-limit 429, token-scoped rename, thread-safe DB connections. 222 passed with Docker, zero leaks, ruff + mypy --strict clean, OpenAPI + CLI byte-identical.
+
+@implementation_plan/phase_agnostic_system_prompt.xml is your operating contract — follow it (UNCHANGED; reuse as-is).
+
+Phase 10b is a TIGHT, TIME-BOXED correctness pass — ONLY these four items, nothing else. Do NOT build the admin console, the full test-taxonomy, the broad B-refactor (registry/DI/BaseRepo/etc.), or the DESIGN.md FDE rewrite. Scope is exactly:
+
+1. B-3 (retrieval budget TOCTOU) — retrieval/service.py _charge does check-then-act over the ledger across multiple separate transactions, so two concurrent retrievals on one scope can both pass the budget check and overshoot (the docstring falsely claims atomicity). Add LedgerRepo.charge_atomic(...) doing the SELECT SUM and the RESERVE/COMMIT insert under ONE BEGIN IMMEDIATE. BudgetExceeded semantics, no-write-on-refusal, and RetrievalResult shape all UNCHANGED. Prove with a concurrent-retrieval test asserting the budget ceiling is never overshot (fails before, passes after).
+
+2. B-1 (Claude SDK error mapping) — model_gateway/claude.py: wrap client.messages.create() and map anthropic.RateLimitError / APIStatusError / APIConnectionError / AuthenticationError onto a new typed UpstreamModelError(ACPError) (carry request_id; NEVER the key or channel content). Today a raw SDK exception aborts the run before the journal row is written, forcing a paid re-issue on resume. Success-path ModelResponse contract UNCHANGED. Test with a mocked SDK raising each error → typed UpstreamModelError, no secret in the message.
+
+3. B-2 (stop_reason inspection) — model_gateway/claude.py: inspect stop_reason before assembling XML. Raise distinct typed errors for "refusal" (empty content, HTTP 200) and "max_tokens" (truncation); only assemble XML on end_turn. Today both surface as a misleading generic "not well-formed XML" from parse_action. Test each stop_reason → its distinct typed error.
+
+4. pytest-cov — add pytest-cov to pyproject dev deps; add a `make test-coverage` target that runs the suite with --cov=src/acp --cov-report=term-missing. Do NOT add a --cov-fail-under gate that could fail the build; just emit the number. Report the resulting coverage %.
+
+Constraints (identical to 10a):
+- Each fix gated behind a test that FAILS before and PASSES after — no proxies. Neutralize-then-restore to prove the test has teeth.
+- INTERFACE-PRESERVING: no change to /v1 routes, request/response JSON, CLI surface, Makefile target NAMES (test-coverage is additive), VerificationResult, model XML wire format, or DB row schemas. Assert OpenAPI JSON + agentctl --help byte-identical before/after.
+- ZERO REGRESSION: full suite green after EACH fix; make up boots one-command keyless; make eval 5/5 + eval-docker 5/5 + redteam 2/2 still pass; stub backend never imports the Anthropic SDK.
+- Docs-in-pass: note B-1/B-2 error taxonomy in DESIGN.md (model gateway / failure modes) and B-3's atomic charge in the metering/budget section, in the same commit.
+- Build against ./.venv (make targets or env -u VIRTUAL_ENV poetry run). Docker for the concurrent-retrieval and regression proofs. Route docker through Makefile/scripts with the cleanup trap.
+- Emit a <status_block> per fix. phase-10b branch (git still deferred).
+- Stop when these four are VERIFIED. Do NOT expand scope to any other B/C/D/E item.
+- End by reporting: each fix's before-fail/after-pass test; full Docker-inclusive green count; OpenAPI + CLI unchanged proof; the coverage %; and confirmation eval/eval-docker/redteam still pass.
+
+[TOOL] Read execution_plan.md, phase_agnostic_system_prompt.xml.
+
+[CLAUDE]:
+I'll start by reading the Phase 10b task context and establishing the baseline. Let me first look at the key files involved in the four fixes.
+
+[TOOL] Bash `ls implementation_plan/ && find src` -> full src/acp layout; phase10_prompt.xml present (no 10b file — user message is authoritative).
+[TOOL] Read retrieval/service.py, model_gateway/claude.py, db/repositories.py (the three edit targets + ledger).
+[TOOL] Read db/connection.py (thread-local Database, immediate()), common/errors.py (ACPError hierarchy incl. RateLimitExceeded), model_gateway/interface.py (ModelRequest/ModelResponse contract).
+[TOOL] ToolSearch -> load TodoWrite. Check Makefile ($(RUN), .PHONY, test targets, cleanup trap) + pyproject dev deps.
+
+[CLAUDE]:
+Baseline: run suite, capture OpenAPI + CLI. TodoWrite — 6 items (baseline + 4 fixes + final).
+
+[TOOL] Bash `pytest -m "not docker"` -> 180 passed, 42 deselected.
+[TOOL] Bash capture OpenAPI JSON (sorted keys, temp DB) -> openapi_before; capture agentctl --help + every subcommand help -> cli_before.
+
+--- B-3: retrieval budget TOCTOU → LedgerRepo.charge_atomic ---
+
+[TOOL] Read tests/integration/test_db_thread_safety.py (concurrency-oracle pattern: N threads, Barrier, exact-sum).
+[TOOL] Edit repositories.py — add LedgerRepo.charge_atomic(scope, tokens, budget_tokens, ...): SELECT SUM committed + net-reserved AND the RESERVE/COMMIT/RELEASE inserts under ONE BEGIN IMMEDIATE; raise BudgetExceeded inside the txn (rolls back → no write). Import BudgetExceeded.
+[TOOL] Edit service.py — _charge now delegates to charge_atomic (same signature/semantics); remove now-unused BudgetExceeded + LedgerEntryKind imports.
+[TOOL] Write tests/integration/test_retrieval_budget_toctou.py (16 threads charge one scope, budget=5 charges: assert spent ≤ ceiling AND == exactly 5 charges; refusal writes nothing; net reserved 0).
+[TOOL] Bash pytest new test -> 2 passed.
+[TOOL] Bash — neutralize charge_atomic to the OLD cross-transaction check-then-act -> test FAILS (overshoot / NameError from the buggy shape). Restore from backup.
+[TOOL] Bash pytest toctou + existing retrieval_service -> pass. Full non-docker -> 182 passed. Zero regression.
+
+[CLAUDE]:
+B-3 complete. <status_block> VERIFIED. Concurrent charges never overshoot; old multi-transaction flow fails the oracle.
+
+--- B-1 + B-2: claude.py error taxonomy ---
+
+[TOOL] Bash — anthropic NOT installed (correct: keyless path never imports it) → tests must mock the SDK.
+[TOOL] Read tests/unit/test_model_gateway.py (conventions), model_gateway/__init__ exports, prompt.py ModelProtocolError (502).
+[TOOL] Edit common/errors.py — add UpstreamModelError(ACPError) http_status=502, code=upstream_model_error, carries request_id; docstring: never key/content.
+[TOOL] Edit prompt.py — add ModelRefusal + ModelTruncated (subclass ModelProtocolError; distinct codes model_refusal / model_truncated).
+[TOOL] Edit model_gateway/__init__ — export ModelRefusal, ModelTruncated.
+[TOOL] Edit claude.py — import UpstreamModelError + ModelRefusal/ModelTruncated; wrap messages.create() in try/except → _map_sdk_error; inspect stop_reason before XML assembly (refusal→ModelRefusal, max_tokens→ModelTruncated, only end_turn assembles); add _map_sdk_error mapping the 4 anthropic types (+ unknown) with request_id, no secret.
+[TOOL] Write tests/unit/test_claude_backend.py (fake `anthropic` module injected into sys.modules: 4 exception classes + scriptable client; B-1 param test → typed UpstreamModelError, request_id carried, no secret in msg/code, 502; unknown wrapped; B-2 refusal→ModelRefusal, max_tokens→ModelTruncated, end_turn→normal response).
+[TOOL] Bash pytest -> 8 passed.
+[TOOL] Bash — neutralize B-1 (re-raise raw exc) -> 5 B-1 tests FAIL (raw exceptions escape). Then neutralize B-2 (drop stop_reason raises) -> refusal/max_tokens tests FAIL. Restore from backup.
+[TOOL] Bash pytest claude_backend -> 8 passed; full non-docker -> 190 passed. Zero regression.
+
+[CLAUDE]:
+B-1 and B-2 complete. <status_block> ×2 VERIFIED. Each SDK error → typed UpstreamModelError (no secret); each stop_reason → its distinct typed error; end_turn assembles normally.
+
+--- pytest-cov ---
+
+[TOOL] Edit pyproject.toml — add pytest-cov = "^6.0.0" to dev deps.
+[TOOL] Edit Makefile — add test-coverage target (pytest --cov=src/acp --cov-report=term-missing; NO fail-under gate); add to .PHONY.
+[TOOL] Bash `poetry lock` + `poetry install --only dev` -> installs coverage 7.15.0 + pytest-cov 6.3.0.
+[TOOL] Bash `pytest -m "not docker" --cov` -> 190 passed; TOTAL 88% (claude.py now 100%).
+
+[CLAUDE]:
+pytest-cov done. <status_block> VERIFIED — 88% non-docker.
+
+--- docs-in-pass ---
+
+[TOOL] Bash grep DESIGN.md sections (retrieval charge, metering, model gateway, failure modes).
+[TOOL] Edit DESIGN.md §2 — rewrite charge description to the true single-BEGIN IMMEDIATE atomic charge; add B-3 TOCTOU note citing test_retrieval_budget_toctou.py.
+[TOOL] Edit DESIGN.md §3 — add model-gateway failure taxonomy: B-1 UpstreamModelError (journal-then-resume rationale, request_id, no secret) + B-2 ModelRefusal / ModelTruncated; only end_turn assembles.
+
+--- final verification ---
+
+[TOOL] Bash `mypy` -> 1 error: unused type:ignore on the 2nd `import anthropic` in _map_sdk_error.
+[TOOL] Edit claude.py — drop the redundant `# type: ignore[import-not-found]`.
+[TOOL] Bash `mypy` -> Success (52 files). `ruff check` -> All checks passed!
+[TOOL] Bash capture OpenAPI + CLI after; diff -> OpenAPI payload byte-identical (9692 bytes both); agentctl --help + all subcommands byte-identical.
+[TOOL] Bash `agentctl eval` -> 5/5; `agentctl redteam` -> 2/2.
+[TOOL] Bash — stub backend loads without importing anthropic (verified in sys.modules).
+[TOOL] Bash `make -n test-coverage` (expands correctly) + `pytest -m smoke` (boot/health = make up proxy) -> 5 passed.
+[TOOL] Bash (background) full docker-inclusive suite with --cov + cleanup trap -> 232 passed in 185.7s; TOTAL 89%; 0 leaked containers.
+[TOOL] Bash (background) `ACP_EVAL_SANDBOX=docker agentctl eval` -> 5/5 (TASK-03 honestly STUB-ONLY); 0 leaked.
+[TOOL] Write memory phase10b-complete.md + update MEMORY.md index.
+
+[CLAUDE]:
+# Phase 10b — Complete
+
+All four items are VERIFIED, each gated behind a test that failed before and passed after, proven with neutralize-then-restore. Executed on the working tree (git deferred per contract). Scope held to exactly the four items — no other B/C/D/E work.
+
+## Per-fix results (before-fail → after-pass)
+- B-3 retrieval budget TOCTOU → LedgerRepo.charge_atomic (SELECT-SUM + RESERVE/COMMIT/RELEASE under one BEGIN IMMEDIATE). test_retrieval_budget_toctou.py: 16 threads, 5-charge budget — before overshoots, after never overshoots (== exactly 5). BudgetExceeded / no-write-on-refusal / RetrievalResult unchanged.
+- B-1 SDK error mapping → UpstreamModelError (502, request_id, no key/content). test_claude_backend.py w/ fake anthropic: before raw exc escapes, after typed error; unknown also wrapped. Success-path ModelResponse unchanged.
+- B-2 stop_reason inspection → ModelRefusal (refusal) / ModelTruncated (max_tokens), only end_turn assembles. before both = generic "not well-formed XML", after distinct typed errors.
+- pytest-cov → dev dep + additive make test-coverage (no fail-under gate). Coverage 89% full / 88% non-docker; claude.py 100%.
+
+## Zero-regression & interface-preserving proof
+- 232 passed with Docker (was 222 + 10 new); 0 leaked containers. Full suite green after each fix (190 non-docker).
+- mypy --strict clean (52 files); ruff clean.
+- OpenAPI JSON byte-identical (9692 bytes); agentctl --help + all subcommands byte-identical. No route/JSON/CLI/VerificationResult/XML/DB-schema change; test-coverage additive; no target renamed.
+- make eval 5/5, eval-docker 5/5 (TASK-03 STUB-ONLY), redteam 2/2; stub never imports anthropic; smoke/boot green.
+
+## Docs-in-pass
+- DESIGN.md §2: true single-BEGIN IMMEDIATE atomic charge + B-3 TOCTOU note.
+- DESIGN.md §3: model-gateway failure taxonomy (B-1 UpstreamModelError; B-2 ModelRefusal/ModelTruncated).
+
+## Descope
+None — all four implemented. Deferred (unchanged): admin console (D), test-taxonomy (C), broad B-refactor, DESIGN FDE rewrite (E).
+
+--------------------------------------------------------------------------------
+
+[USER]:
+save this conversation in @claude_chat/phase10b.txt like @claude_chat/phase_0.txt
+
+[CLAUDE]:
+(Wrote this raw turn-by-turn transcript to claude_chat/phase10b.txt.)
+
+=== End of conversation ===
