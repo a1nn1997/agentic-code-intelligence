@@ -1,0 +1,64 @@
+[project]
+name = "acp"
+version = "0.0.0"
+description = "Agentic Code-Intelligence Platform — multi-user service where an autonomous agent navigates a large polyglot codebase and ships verified changes safely, concurrently, and within a hard budget."
+authors = [{ name = "Aniruddh Singh", email = "asb.aniruddh.singh@gmail.com" }]
+requires-python = ">=3.12,<3.13"
+readme = "README.md"
+dependencies = [
+    "fastapi (>=0.115.0,<0.116.0)",
+    "uvicorn[standard] (>=0.32.0,<0.33.0)",
+    "pydantic (>=2.9.0,<3.0.0)",
+    "pydantic-settings (>=2.6.0,<3.0.0)",
+    "typer (>=0.15.0,<0.16.0)",
+    "httpx (>=0.28.0,<0.29.0)",
+    "tree-sitter (>=0.23.0,<0.25.0)",
+    "tree-sitter-python (>=0.23.0,<0.25.0)",
+    "tree-sitter-typescript (>=0.23.0,<0.25.0)",
+]
+
+[project.scripts]
+agentctl = "acp.cli.main:main"
+
+[tool.poetry]
+packages = [{ include = "acp", from = "src" }, { include = "eval" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-asyncio = "^0.24.0"
+pytest-cov = "^6.0.0"
+ruff = "^0.7.0"
+mypy = "^1.13.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "unit: fast isolated unit tests",
+    "smoke: minimal boot/health checks",
+    "integration: cross-module tests",
+    "docker: requires a running Docker daemon + the acp-sandbox image (Phase 3 sandbox)",
+    "e2e: full HTTP layer end-to-end (requires Docker sandbox)",
+    "regression: named regression tests for previously-fixed bugs",
+    "parity: Phase-8 polyglot parity tests (requires all runner images: go/rust/ts)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["acp"]
+mypy_path = "src"
+strict = true
+warn_unused_ignores = true
+disallow_untyped_defs = true

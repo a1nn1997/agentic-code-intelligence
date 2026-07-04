@@ -1,0 +1,67 @@
+# ACP local stack. Two tiers on a PRIVATE network; ONLY the gateway publishes a
+# port to the host. The sandbox host is reachable only inside the network, never
+# from a consumer — this is the API-only boundary expressed in the topology.
+#
+# `make up` runs this in stub mode, keyless (hard requirement #8). No secret is
+# required for the stack to boot; a key is only needed for `make up-claude`.
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # The ONLY published port in the whole stack.
+    ports:
+      - "${GATEWAY_PORT:-8000}:8000"
+    environment:
+      # Defaults keep it keyless; override via `make up MODEL_BACKEND=claude`.
+      ACP_MODEL_BACKEND: "${ACP_MODEL_BACKEND:-stub}"
+      ACP_SANDBOX_RUNNER: "${ACP_SANDBOX_RUNNER:-python}"
+      ACP_SANDBOX_HOST: "http://sandbox:9000"
+      ACP_GATEWAY_HOST: "0.0.0.0"
+      ACP_GATEWAY_PORT: "8000"
+      ACP_DATABASE_URL: "sqlite:////app/var/acp.db"
+      # Pass a key ONLY for the claude backend; empty in stub mode.
+      ACP_MODEL_API_KEY: "${ACP_MODEL_API_KEY:-}"
+    volumes:
+      - acp-state:/app/var
+      - acp-artifacts:/app/artifacts
+    networks:
+      - acp-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      - sandbox
+
+  # Sandbox tier. The Phase-3 verification path does not run as a long-lived
+  # service: the control plane invokes `docker run acp-sandbox:latest` per job
+  # (built via `make sandbox-build`), giving a fresh, network-denied,
+  # resource-capped, non-root, read-only container per verification. This compose
+  # entry holds the network slot + the untrusted-posture defaults; wiring the
+  # gateway task path to spawn sandbox containers is Phase 4/6. Publishes NO host
+  # port; only the gateway can reach it over the private network.
+  sandbox:
+    image: python:3.12-slim
+    command: ["sh", "-c", "echo 'sandbox tier: per-job containers via acp-sandbox:latest'; sleep infinity"]
+    expose:
+      - "9000"          # visible inside the network only; NOT published to host
+    networks:
+      - acp-internal
+    # Untrusted tier posture, asserted here from day one:
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  acp-internal:
+    driver: bridge
+    internal: false      # gateway needs host-published port; sandbox stays unpublished
+
+volumes:
+  acp-state:
+  acp-artifacts:

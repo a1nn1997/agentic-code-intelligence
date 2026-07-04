@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Local state / data
+*.db
+*.db-wal
+*.db-shm
+data/
+var/
+artifacts/
+
+# Env / secrets — never commit
+.env
+.env.local
+!.env.example
+# ...except the sample-repo fixture's PLANTED fake secret (a redaction test target)
+!sample_repo/.env
+
+# OS / editor
+.DS_Store
+
+# Rust build artifacts (sandbox/rust)
+target/
+**/target/
+
+# Node / TypeScript (sandbox/ts)
+node_modules/
+*.tsbuildinfo
