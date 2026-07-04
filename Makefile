@@ -80,10 +80,10 @@ seed: ## Load demo user + hashed API key (prints token once)
 
 # --- lifecycle ---------------------------------------------------------------
 up: ## Boot the whole stack in stub mode, keyless (hard requirement #8)
-	$(COMPOSE) up --build
+	$(COMPOSE) up --build -d
 
 up-claude: ## Boot the stack with the Model Gateway pointed at Claude (needs .env key)
-	$(COMPOSE) up --build
+	$(COMPOSE) up --build -d
 
 down: ## Tear down, preserve volumes
 	$(COMPOSE) down
