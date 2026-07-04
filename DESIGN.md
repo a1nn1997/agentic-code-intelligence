@@ -5,8 +5,10 @@ codebase and ships **verified** changes — safely, concurrently, within a hard
 budget. The retrieval model, agent control loop, isolation model, and sandbox are
 hand-owned; no framework hides the core loop. This document follows the altitude
 order requirements → estimates → HLD → LLD → failures → tradeoffs → framing →
-conclusion. Per-decision depth lives in [`docs/adr/`](docs/adr/); this doc links
-rather than inlines it to stay within the page budget.
+conclusion. Sections 3–5 are each presented at two layers — the **feature/component**
+layer and the **code-level design-pattern** layer (§3.3, §4.1, §5.1) — so the same
+decision is legible to both a system reviewer and an engineer reading the source.
+Per-decision depth lives in [`docs/adr/`](docs/adr/), linked rather than inlined.
 
 ---
 
@@ -200,6 +202,25 @@ module · interface · proving test.
   *Proof:* `test_api_boundary.py::test_dashboard_data_endpoints_not_privileged`,
   `::test_dashboard_summary_cross_user_isolation`.
 
+### 3.3 Code-level design patterns (the LLD *below* the components)
+
+The component view above is the feature layer. This is the software-design layer:
+the actual code patterns each component is built from, why each was chosen, and the
+limitation it carries (mitigations for those limitations live in §4.1).
+
+| Pattern | Where in code | Why this pattern | Limitation it carries |
+|---|---|---|---|
+| **Ports & Adapters (hexagonal)** — `Protocol`/`runtime_checkable` `interface.py` + loud `stub.py` + real impl | every module (`*/interface.py`, `*/stub.py`) | Lets us swap real/stub/polyglot behind one contract and test each module in isolation; an early wrong call fails loudly | Structural typing catches a contract mismatch only at call time, not compile time |
+| **Repository pattern** — the only place SQL lives; user-scoped getters, no unscoped one | `src/acp/db/repositories.py` (7 repos) | Confines SQL to one layer (portability seam) and makes isolation *structural* — cross-user addressing is not expressible | A future unscoped getter would silently break isolation if added carelessly |
+| **Strategy + Factory** — config enum selects the concrete backend at boot | `sandbox_client/__init__.py::build_sandbox_client`, `model_gateway/gateway.py::build_model_gateway` | One env var (`SANDBOX_RUNNER`/`MODEL_BACKEND`) retargets sandbox language or model with zero code change | Runner-image / backend-key mismatch is only discoverable at runtime |
+| **Explicit state machine** — hand-written transitions, no framework | `orchestrator/loop.py::AgentLoop.run` | The assignment's core ask: a loop we own and can single-step; every transition is plain Python | Transitions are hand-maintained; a new state needs deliberate wiring |
+| **Content-addressed idempotency** — sha256 of the patch envelope gates apply-once | `orchestrator/loop.py` (`content_hash` gate) | Makes EDIT/RENAME effects idempotent so resume never re-applies | Hash is over bytes, not semantics — a differently-serialized equal patch would re-apply |
+| **Choke-point (single funnel)** — every retrieval charge + redaction goes through one method | `retrieval/service.py::_meter_content`/`_charge` → `LedgerRepo.charge_atomic` | Guarantees no primitive can return raw bytes or skip metering; one place to audit | Every new primitive must be routed through it or it silently bypasses the guarantee |
+| **Closed vocabulary (`StrEnum` + allowlist parser)** — the tool allowlist as a type | `common/types.py`, `model_gateway/prompt.py::ActionKind`/`parse_action` | Retrieved data cannot escalate to a command: there is no verb to land in | Adding a capability is deliberate friction (extend the enum + parser) |
+| **Dependency injection** — `Depends(require_auth)` on every `/v1` route | `gateway/auth.py::require_auth` + routers | Auth/identity applied uniformly; `user_id` from the key, never the body | A newly-added route could forget the dependency |
+| **Thread-local connections + explicit locks** — per-thread SQLite conn; `Lock` on metrics/limiter | `db/connection.py`, `gateway/auth.py`, `gateway/metrics.py` | Thread-safe within the single process while honoring SQLite's WAL + `BEGIN IMMEDIATE` contract | In-process only — state (rate window, metrics) is per-process, not shared across nodes |
+| **Append-only + typed rows** — immutability by DB trigger; pydantic `from_row` | `db/schema.sql`, `db/models.py` | The journal/ledger can only be added to, so reconciliation can never rewrite history | Trigger-enforced immutability blocks legitimate corrections without a new-row compensating entry |
+
 ---
 
 ## 4. Failure modes & mitigations
@@ -220,6 +241,24 @@ module · interface · proving test.
 | Zip/tar-slip on ingest | Malicious archive | Path containment check | Extraction guarded; `IsolationViolation` | — | `test_workspace_index.py` |
 | Repo with no tests | Missing suite | `pytest` exit / no collection | Verify returns not-passed (no false success) | Assumes repo *has* verifiable tests (documented assumption) | `test_sandbox_verification.py` |
 
+The table above is the feature/runtime layer. The one below is the **code-level**
+layer — the ways the design patterns in §3.3 can fail, and how each is contained.
+
+### 4.1 Code-level / pattern failure modes
+
+| Pattern failure | Trigger | How detected | Mitigation in this project | Residual risk | Proof |
+|---|---|---|---|---|---|
+| Adapter drifts from its Port | An impl silently misses a `Protocol` method | Import/instantiation-time (structural check) | `test_interfaces.py` asserts every stub/impl satisfies its `runtime_checkable` Protocol | A never-called method could drift until first use | `tests/unit/test_interfaces.py` |
+| Repository leaks an unscoped getter | Dev adds a getter without `user_id` | Isolation test fails; `assert_owned` tripwire | Only user-scoped getters exist; `assert_owned` defense-in-depth | Discipline-dependent for *new* getters | `test_data_access.py`, `test_worktree_isolation.py` |
+| Strategy/Factory backend mismatch | Config names a runner whose image isn't built | `ACP_REQUIRE_DOCKER=1` forces fail-not-skip | Loud failure instead of silent stub fallback | Bare compose still reports `sandbox:false` (by design) | `test_agent_loop_docker.py`, `make test-docker` |
+| State-machine transition gap | A new action/state added without wiring | Terminal-state assertion / loop test | Closed `TaskState` (3 terminal states); every step journaled | Hand-maintained; needs a test per new transition | `test_agent_loop.py` |
+| Idempotency-key bypass | Patch re-serialized to different bytes | Artifact-hash lookup miss | Envelope is built deterministically so bytes are stable | Non-deterministic serialization would re-apply | `test_agent_loop.py::test_resume_no_double_charge_and_apply_exactly_once` |
+| Choke-point bypass | New primitive returns bytes without `_meter_content` | Redaction/metering test fails | All content primitives funnel through one method | A primitive added off the funnel bypasses redaction | `test_retrieval_service.py`, `test_retrieval_redaction.py` |
+| Allowlist widening | Free text / unknown verb from model | `parse_action` raises `ModelProtocolError` | Closed vocabulary; non-`<action>` root refused | A carelessly-added verb widens the boundary | `test_model_gateway.py`, `test_agent_loop.py::test_injection_has_zero_effect_differential` |
+| DI dependency omitted on a route | New `/v1` route without `Depends(require_auth)` | Route-inventory test | Boundary test enumerates routes and asserts auth | Test must be kept in step with new routes | `test_api_boundary.py::test_v1_tasks_endpoint_requires_auth` |
+| In-process state under multi-node | Horizontal scale of the monolith | N/A (single-process today) | Rate window/metrics are per-process by design | Shared store (Redis/DB) needed to scale; documented | `test_rate_limit.py` (single-process contract) |
+| Cross-thread SQLite misuse | Sharing one connection across threads | `check_same_thread`/WAL contract | Per-thread connection + `BEGIN IMMEDIATE` write lock | Long writes serialize (single-writer ceiling) | `test_db_thread_safety.py`, `test_retrieval_budget_toctou.py` |
+
 ---
 
 ## 5. Tradeoffs
@@ -239,6 +278,24 @@ Every (−) is pulled from an ADR. This table lists **every** tradeoff taken.
 | Effectively-once "per journaled decision" | Crash-safe resume, no double-charge | Guarantee is per journaled step, not sub-step | Non-idempotent external side effect | All effects made idempotent by design |
 | Stub-model determinism | Keyless reproducible eval | Doesn't exercise real-model nondeterminism | Behavior only a live model shows | `MODEL_BACKEND=claude` runs the same loop against real Claude |
 | Placeholder pricing | Cost model without a live account | $/task not authoritative | Any real dollar quote | Confirm price → one-line constant change |
+
+The table above is the architectural layer. The one below is the **code-pattern**
+layer — the design-pattern choices taken *inside* the code and what each costs.
+
+### 5.1 Code-level pattern tradeoffs
+
+| Pattern choice | What we gain | What we lose | When the cost bites | Mitigation / exit |
+|---|---|---|---|---|
+| Ports & Adapters everywhere | Swappable backends, isolated tests, clean seams | Extra indirection (interface + stub + impl per module) | Small modules where a direct class would do | Keep the pattern only where a swap is real (backends, sandbox) |
+| Repository as the sole SQL layer | Isolation-by-construction, Postgres portability | No ad-hoc queries; every read needs a repo method | A one-off analytics query | Add a scoped read method, never a raw query in a module |
+| Strategy/Factory by config enum | One-var backend swap, stub-vs-real | Runtime-resolved, so mismatch isn't caught at build | Misconfigured deployment | `ACP_REQUIRE_DOCKER` fail-loud; startup validation |
+| Hand-written state machine (no framework) | Full ownership, single-steppable, defensible | We maintain transitions a framework would give | Many new states/actions | Closed enum + a test per transition |
+| Content-addressed idempotency | Apply-once across resume, no double effect | Byte-level, not semantic, dedup | Non-deterministic patch serialization | Deterministic envelope construction (enforced) |
+| Single choke-point for cost+redaction | One auditable place; no raw-byte leak | Every primitive must route through it | Adding a retrieval primitive | Test asserts redaction/metering on each primitive |
+| Closed vocabulary allowlist | Structural injection resistance | New capability = deliberate code change | Fast feature iteration on the agent's toolset | Intentional — friction is the safety property |
+| DI for auth on every route | Uniform, un-forgettable auth | A route can omit the dependency | Adding endpoints | Route-inventory boundary test |
+| In-process locks + thread-local conns | Simple, correct in one process | Doesn't scale past one node | Horizontal scale | Swap to shared store (Redis/DB) — check site unchanged |
+| Append-only + trigger-enforced immutability | Tamper-proof trace; safe reconciliation | Can't edit history; corrections need compensating rows | A legitimate fix-up | New compensating entry, never an UPDATE |
 
 ---
 
